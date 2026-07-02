@@ -1,0 +1,25 @@
+node_modules/
+recordings/
+*.webm
+*.mp4
+.DS_Store
+dist/
+out/
+
+# Recording/project folders (generated data, gigabytes of media — not source)
+avatar-mix/
+avatar-mix-2/
+avatar-mix-3/
+avatar2/
+alternativa-a-holded/
+alternativa-a-holded-2/
+rec_*/
+
+# video-use vendored skill: keep secrets + regenerable stuff out of git
+video-use/.env
+video-use/.venv/
+video-use/**/__pycache__/
+video-use/**/*.pyc
+video-use/**/*.egg-info/
+video-use/.venv-whisper/
+src/vendor/mediapipe/

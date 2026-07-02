@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: mediastream: rsmedia:; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' blob: data:; style-src 'self' 'unsafe-inline';" />
+    <title>Record Studio</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand"><span class="dot"></span> RECORD&nbsp;STUDIO</div>
+      <nav class="topnav">
+        <button id="navProjects" class="topnav-btn active">🎬 Proyectos</button>
+        <button id="navScripts" class="topnav-btn">📝 Guiones</button>
+      </nav>
+      <div id="crumb" class="crumb"></div>
+      <div class="topbar-right">
+        <span id="status" class="status">listo</span>
+        <span id="timer" class="timer hidden">00:00</span>
+      </div>
+    </header>
+
+    <!-- ============================ HOME / GALLERY ========================= -->
+    <main id="viewHome" class="home">
+      <!-- Onboarding (first run: no folder chosen yet) -->
+      <section id="onboarding" class="onboarding hidden">
+        <div class="hero">
+          <div class="hero-badge"><span class="dot"></span> RECORD STUDIO</div>
+          <h1>Graba, monta y comparte vídeos con IA</h1>
+          <p class="hero-sub">Graba tu pantalla y tu cámara a la vez. Claude Code los edita por ti: elige planos, corta, pone subtítulos y difumina el fondo.</p>
+          <div class="steps3">
+            <div class="step3"><span class="n">1</span><b>Graba</b>pantalla + cámara</div>
+            <div class="step3"><span class="n">2</span><b>Monta</b>Claude edita el vídeo</div>
+            <div class="step3"><span class="n">3</span><b>Comparte</b>listo para publicar</div>
+          </div>
+          <button id="onbChoose" class="btn-primary big">📁 Elegir carpeta para empezar</button>
+          <p class="hero-foot">Tus proyectos se guardarán en esa carpeta.</p>
+        </div>
+      </section>
+
+      <!-- Projects (folder chosen) -->
+      <section id="projectsPanel" class="panel hidden">
+        <div class="panel-head">
+          <div class="head-left"><h2>Tus proyectos</h2></div>
+          <div class="root-row">
+            <span class="lbl">Guardando en:</span>
+            <span id="rootPath" class="proj-path">—</span>
+            <button id="chooseRoot" class="btn-secondary">📁 Cambiar…</button>
+          </div>
+        </div>
+        <div class="new-proj">
+          <input id="newName" type="text" placeholder="Nombre del nuevo vídeo… (p.ej. “Tutorial de mi app”)" />
+          <button id="createProj" class="btn-primary">＋ Crear y grabar</button>
+        </div>
+        <div id="projectsGrid" class="projects-grid">
+          <div class="empty">Aún no hay proyectos. Escribe un nombre arriba y pulsa “Crear y grabar”.</div>
+        </div>
+      </section>
+    </main>
+
+    <!-- ============================ PROJECT DETAIL ======================== -->
+    <main id="viewProject" class="detail hidden">
+      <section class="panel">
+        <div class="panel-head">
+          <div class="head-left">
+            <button id="backHome" class="btn-tertiary">← Proyectos</button>
+            <h2 id="detailName">Proyecto</h2>
+            <span id="detailBadge" class="badge draft">borrador</span>
+          </div>
+          <div class="head-actions">
+            <button id="recHere" class="btn-rec">● Grabar clip</button>
+            <button id="renameProj" class="btn-secondary">✎ Renombrar</button>
+            <button id="openFolder" class="btn-secondary">📁 Carpeta</button>
+            <button id="deleteProj" class="btn-secondary danger">🗑 Borrar</button>
+          </div>
+        </div>
+
+        <div class="detail-body">
+          <!-- ① Clips -->
+          <section class="card">
+            <div class="card-head">
+              <h3 id="clipsTitle">① Clips</h3>
+              <span class="card-help">El material en bruto. Graba uno o varios clips.</span>
+            </div>
+            <div id="clipsGrid" class="clips-grid"></div>
+          </section>
+
+          <!-- ② Montar -->
+          <section class="card">
+            <div class="card-head">
+              <h3>② Montar el vídeo</h3>
+              <span class="card-help">Claude Code edita tus clips con la skill video-use (transcribe con Whisper local, elige planos, subtítulos).</span>
+            </div>
+            <div class="compose-actions">
+              <button id="composeBtn" class="btn-primary big">✨ Componer vídeo</button>
+              <button id="cancelBtn" class="btn-secondary danger hidden">✕ Cancelar</button>
+              <button id="toggleOpts" class="btn-tertiary">▸ Opciones</button>
+              <button id="toggleLog" class="btn-tertiary hidden">▸ Ver progreso</button>
+              <span id="composeStatus" class="compose-status"></span>
+            </div>
+            <div id="optsPanel" class="opts-panel hidden">
+              <div class="opts">
+                <label>Formato
+                  <select id="optAspect">
+                    <option value="16:9">16:9 horizontal (YouTube)</option>
+                    <option value="9:16">9:16 vertical (Shorts/Reels)</option>
+                  </select>
+                </label>
+                <label>Subtítulos
+                  <select id="optSubs"><option value="yes">Sí</option><option value="no">No</option></select>
+                </label>
+                <label>Calidad transcripción
+                  <select id="optModel">
+                    <option value="small">small (rápido)</option>
+                    <option value="medium">medium (recomendado)</option>
+                    <option value="large-v3">large-v3 (máxima)</option>
+                  </select>
+                </label>
+                <label>Cámara en esquina
+                  <select id="optPip">
+                    <option value="br">↘ abajo-dcha</option>
+                    <option value="bl">↙ abajo-izq</option>
+                    <option value="tr">↗ arriba-dcha</option>
+                    <option value="tl">↖ arriba-izq</option>
+                  </select>
+                </label>
+              </div>
+              <label class="blur-toggle opt-check"><input type="checkbox" id="optCrop" /> 🚫 Quitar barra de menú de macOS (recorte superior)</label>
+              <label class="blur-toggle opt-check"><input type="checkbox" id="optSfx" /> 🔊 Añadir efectos de sonido (SFX) timados</label>
+              <input id="optTone" class="tone" placeholder="Indicaciones de estilo (opcional): “dinámico, cortes rápidos, energía alta”…" />
+            </div>
+            <pre id="composeLog" class="compose-log hidden"></pre>
+          </section>
+
+          <!-- ③ Resultado -->
+          <section class="card">
+            <div class="card-head">
+              <h3>③ Resultado</h3>
+              <span class="card-help">Tu vídeo final, listo para publicar.</span>
+            </div>
+            <div id="finalArea" class="final-area">
+              <div class="empty">Aún no hay vídeo final. Graba algún clip y pulsa <b>✨ Componer vídeo</b>.</div>
+            </div>
+            <div id="iterateBlock" class="iterate hidden">
+              <input id="feedbackBox" placeholder="¿Algún cambio? “más planos de cara”, “ponlo vertical”, “cortes más rápidos”…" />
+              <button id="iterateBtn" class="btn-primary">↻ Aplicar cambios</button>
+              <label class="blur-toggle resume-toggle" id="resumeRow">
+                <input type="checkbox" id="resumeChk" checked /> 🧠 Continuar la conversación (recuerda los cambios anteriores)
+              </label>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <!-- ============================ RECORD VIEW =========================== -->
+    <main id="viewRecord" class="layout hidden">
+      <section class="panel sources">
+        <div class="panel-head">
+          <h2>① Elige qué grabar</h2>
+          <button id="refreshSources" class="btn-tertiary">↻ Actualizar</button>
+        </div>
+        <p class="panel-help">Tu pantalla completa o una ventana concreta.</p>
+        <div id="sourcesGrid" class="sources-grid">
+          <div class="empty">Cargando fuentes…</div>
+        </div>
+      </section>
+
+      <section class="panel stage">
+        <div class="panel-head">
+          <div class="head-left">
+            <button id="backProject" class="btn-tertiary">← Proyecto</button>
+            <h2 id="recProjName">Grabar</h2>
+            <span id="clipCount" class="chip">0 clips</span>
+          </div>
+        </div>
+
+        <div class="stage-body">
+          <h3 class="step">② Tu cámara y micro</h3>
+          <div class="devices">
+            <label>Cámara <select id="camSelect"></select></label>
+            <label>Micrófono <select id="micSelect"></select></label>
+            <label class="blur-toggle"><input type="checkbox" id="blurToggle" /> 🌫 Difuminar fondo</label>
+            <label class="blur-toggle blur-level" id="blurLevelRow" style="display:none">
+              Intensidad
+              <input type="range" id="blurLevel" min="0" max="100" value="50" />
+            </label>
+          </div>
+          <div class="meter-row">
+            <span class="meter-lbl">Nivel de micro</span>
+            <div class="meter"><div id="meterFill" class="meter-fill"></div></div>
+          </div>
+
+          <div class="previews">
+            <figure class="preview">
+              <figcaption>Pantalla</figcaption>
+              <video id="screenPreview" muted autoplay playsinline></video>
+            </figure>
+            <figure class="preview cam">
+              <figcaption>Cámara</figcaption>
+              <video id="camPreview" muted autoplay playsinline></video>
+            </figure>
+          </div>
+
+          <h3 class="step">③ Graba</h3>
+          <div class="controls">
+            <div id="recHint" class="hint">Elige una pantalla arriba para poder grabar.</div>
+            <div class="rec-controls">
+              <button id="recBtn" class="btn-rec big" disabled>● Grabar</button>
+              <button id="pauseBtn" class="pause" disabled>⏸ Pausar</button>
+              <button id="stopBtn" class="stop" disabled>■ Parar</button>
+            </div>
+          </div>
+          <p class="panel-help">Al grabar, la ventana se oculta y verás una mini-cámara abajo a la derecha. Atajos: ⌘⇧1 pausar · ⌘⇧2 parar.</p>
+
+          <div id="doneBar" class="done-bar hidden">
+            <span id="doneMsg" class="done-msg">✓ Clip guardado</span>
+            <button id="doneRec" class="btn-primary">Ver clips y montar el vídeo →</button>
+          </div>
+
+          <div class="tp-row">
+            <button id="tpToggle" class="btn-secondary">📜 Mostrar teleprompter</button>
+            <button id="tpEdit" class="btn-tertiary">✎ Editar texto</button>
+            <span class="hint">El teleprompter sale cerca de la cámara y no se graba.</span>
+          </div>
+          <div id="tpEditor" class="tp-editor hidden">
+            <textarea id="tpText" placeholder="Escribe aquí lo que quieres leer mientras grabas…"></textarea>
+            <button id="tpSave" class="btn-primary">Guardar texto</button>
+          </div>
+
+          <h3 class="step" id="recClipsTitle">Clips de este proyecto</h3>
+          <div id="recClips" class="rec-clips"><div class="empty">Aún no has grabado clips.</div></div>
+        </div>
+
+        <div id="log" class="log"></div>
+      </section>
+    </main>
+
+    <!-- ============================ SCRIPTS VIEW ========================== -->
+    <main id="viewScripts" class="scripts-view hidden">
+      <section class="panel">
+        <div class="panel-head"><div class="head-left"><h2>Guiones</h2></div>
+          <span class="card-help">Escribe guiones en tu propia voz, aprendida de tu canal.</span>
+        </div>
+        <div class="scripts-body">
+          <section class="card">
+            <div class="card-head"><h3>① Mi estilo</h3><span class="card-help">Analizo tu canal de YouTube (solo vídeos largos, no Shorts) para aprender tu voz. Se guarda y no hay que repetirlo.</span></div>
+            <div class="row">
+              <input id="channelUrl" class="grow" placeholder="URL de tu canal de YouTube (https://youtube.com/@tu_canal)" />
+              <button id="analyzeBtn" class="btn-primary">🔎 Analizar mi canal</button>
+            </div>
+            <div class="row2">
+              <span id="profileStatus" class="profile-status">Sin perfil todavía.</span>
+              <button id="toggleScriptLog" class="btn-tertiary mini hidden">▸ Ver progreso</button>
+              <button id="cancelScriptBtn" class="btn-secondary danger mini hidden">✕ Cancelar</button>
+            </div>
+            <pre id="scriptLog" class="compose-log hidden"></pre>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h3>② Nuevo guion</h3><span class="card-help">Dame el tema y lo escribo en tu estilo.</span></div>
+            <textarea id="topicBox" class="topic" placeholder="¿De qué va el vídeo? Tema, ideas, puntos clave… Puedes pegar una URL (repo, web) y la leeré para basarme en lo que realmente es."></textarea>
+            <div class="row">
+              <label class="mini-opt">Duración
+                <select id="scrDuration"><option value="">auto</option><option>30s</option><option>1 min</option><option>3 min</option><option>5 min</option></select>
+              </label>
+              <label class="mini-opt">Formato
+                <select id="scrFormat"><option value="">—</option><option>YouTube</option><option>Short / Reel</option><option>TikTok</option></select>
+              </label>
+              <button id="generateBtn" class="btn-primary big">✍️ Generar guion</button>
+              <span id="genStatus" class="compose-status"></span>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h3>③ Guion</h3><span id="scriptName" class="card-help"></span></div>
+            <textarea id="scriptOut" class="script-out" placeholder="Aquí aparecerá tu guion. Puedes editarlo a mano."></textarea>
+            <div class="row">
+              <button id="saveScriptBtn" class="btn-secondary">💾 Guardar</button>
+              <button id="copyScriptBtn" class="btn-secondary">⧉ Copiar</button>
+              <button id="recordScriptBtn" class="btn-rec">🎬 Grabar con este guion</button>
+              <input id="scriptFeedback" class="grow" placeholder="Ajustar: 'más corto', 'gancho más fuerte', 'añade un ejemplo'…" />
+              <button id="rewriteBtn" class="btn-primary">↻ Reescribir</button>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h3>Guiones guardados</h3></div>
+            <div id="scriptsList" class="scripts-list"><div class="empty">Aún no hay guiones.</div></div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <!-- 3·2·1 countdown overlay -->
+    <div id="countdown" class="countdown hidden"><span id="countNum">3</span></div>
+
+    <!-- Generic modal (prompt / confirm) -->
+    <div id="modal" class="modal hidden">
+      <div class="modal-card">
+        <h3 id="modalTitle"></h3>
+        <p id="modalText" class="modal-text hidden"></p>
+        <input id="modalInput" class="modal-input hidden" type="text" />
+        <div class="modal-actions">
+          <button id="modalCancel" class="btn-secondary">Cancelar</button>
+          <button id="modalOk" class="btn-primary">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Clip player modal -->
+    <div id="videoModal" class="modal hidden">
+      <div class="modal-card video">
+        <video id="modalVideo" controls playsinline></video>
+        <div class="modal-actions"><button id="videoModalClose" class="btn-secondary">Cerrar</button></div>
+      </div>
+    </div>
+
+    <script src="vendor/mediapipe/selfie_segmentation.js"></script>
+    <script src="campipe.js"></script>
+    <script src="renderer.js"></script>
+  </body>
+</html>

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; media-src 'self' blob: mediastream:; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' blob: data:; style-src 'self' 'unsafe-inline';" />
+    <style>
+      html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
+        font: 13px -apple-system, Helvetica, Arial, sans-serif; color: #fff; user-select: none; }
+      .wrap {
+        -webkit-app-region: drag;
+        margin: 8px; border-radius: 16px; overflow: hidden; position: relative;
+        background: #000; border: 1px solid #ffffff22; box-shadow: 0 10px 34px #000a;
+      }
+      #self { display: block; width: 100%; height: 158px; object-fit: cover; background: #111; transform: scaleX(-1); }
+      .bar {
+        display: flex; align-items: center; gap: 8px; padding: 8px 10px; height: 38px;
+        background: rgba(14,14,22,0.96);
+      }
+      .dot { width: 10px; height: 10px; border-radius: 50%; background: #ff2d55;
+        box-shadow: 0 0 10px #ff2d55; animation: blink 1s infinite; }
+      body.paused .dot { background: #f5a623; box-shadow: 0 0 10px #f5a623; animation: none; }
+      @keyframes blink { 50% { opacity: .3; } }
+      .t { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 14px; flex: 1; }
+      .b { -webkit-app-region: no-drag; cursor: pointer; border: 1px solid #ffffff22;
+        background: #ffffff14; color: #fff; border-radius: 8px; padding: 5px 9px; font-size: 13px; }
+      .b:hover { background: #ffffff28; }
+      .b.stop { background: #ff2d55; border-color: #ff2d55; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <video id="self" autoplay muted playsinline></video>
+      <div class="bar">
+        <span class="dot"></span>
+        <span id="t" class="t">00:00</span>
+        <button id="r" class="b" title="Reiniciar toma (descarta)">↺</button>
+        <button id="p" class="b">⏸</button>
+        <button id="s" class="b stop">■</button>
+      </div>
+    </div>
+    <script src="vendor/mediapipe/selfie_segmentation.js"></script>
+    <script src="campipe.js"></script>
+    <script src="float.js"></script>
+  </body>
+</html>

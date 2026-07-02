@@ -1,0 +1,58 @@
+'use strict'
+
+const { contextBridge, ipcRenderer } = require('electron')
+
+contextBridge.exposeInMainWorld('studio', {
+  // capture + folders
+  listSources: () => ipcRenderer.invoke('list-sources'),
+  chooseDir: (title) => ipcRenderer.invoke('choose-dir', title),
+
+  // projects
+  listProjects: (root) => ipcRenderer.invoke('list-projects', root),
+  createProject: (root, name) => ipcRenderer.invoke('create-project', { root, name }),
+  projectDetail: (dir) => ipcRenderer.invoke('project-detail', dir),
+  appendClip: (payload) => ipcRenderer.invoke('append-clip', payload),
+  deleteClip: (dir, clipId) => ipcRenderer.invoke('delete-clip', { dir, clipId }),
+  reorderClips: (dir, orderedIds) => ipcRenderer.invoke('reorder-clips', { dir, orderedIds }),
+  renameProject: (dir, name) => ipcRenderer.invoke('rename-project', { dir, name }),
+  setTeleprompter: (dir, text) => ipcRenderer.invoke('set-teleprompter', { dir, text }),
+  showTeleprompter: (payload) => ipcRenderer.send('show-teleprompter', payload),
+  hideTeleprompter: () => ipcRenderer.send('hide-teleprompter'),
+  onTpClosed: (cb) => ipcRenderer.on('tp-closed', () => cb()),
+  onTpSaved: (cb) => ipcRenderer.on('tp-saved', (_e, payload) => cb(payload)),
+  onTpLoaded: (cb) => ipcRenderer.on('tp-loaded', (_e, payload) => cb(payload)),
+  deleteProject: (dir) => ipcRenderer.invoke('delete-project', dir),
+  setComposeOpts: (dir, opts) => ipcRenderer.invoke('set-compose-opts', { dir, opts }),
+
+  // compose + iterate (headless claude + video-use). `resume` continues the
+  // SAME Claude Code conversation (remembers prior edits) instead of a new one.
+  composeProject: (dir, opts, resume) => ipcRenderer.invoke('compose-project', { dir, opts, resume }),
+  iterateProject: (dir, feedback, opts, resume) => ipcRenderer.invoke('iterate-project', { dir, feedback, opts, resume }),
+  agentSession: (dir) => ipcRenderer.invoke('agent-session', dir),
+
+  // generic headless-agent job events + control (keyed by project dir or 'style'/'script')
+  agentStatus: (key) => ipcRenderer.invoke('agent-status', key),
+  agentCancel: (key) => ipcRenderer.invoke('agent-cancel', key),
+  onAgentProgress: (cb) => ipcRenderer.on('agent-progress', (_e, p) => cb(p)),
+  onAgentDone: (cb) => ipcRenderer.on('agent-done', (_e, p) => cb(p)),
+
+  // scripts (style profile + script writing)
+  scriptsStatus: (root) => ipcRenderer.invoke('scripts-status', root),
+  analyzeChannel: (root, channel) => ipcRenderer.invoke('analyze-channel', { root, channel }),
+  generateScript: (root, topic, opts) => ipcRenderer.invoke('generate-script', { root, topic, opts }),
+  rewriteScript: (root, scriptPath, feedback, opts) => ipcRenderer.invoke('rewrite-script', { root, scriptPath, feedback, opts }),
+  listScripts: (root) => ipcRenderer.invoke('list-scripts', root),
+  readScript: (p) => ipcRenderer.invoke('read-script', p),
+  saveScript: (p, text) => ipcRenderer.invoke('save-script', { path: p, text }),
+  deleteScript: (p) => ipcRenderer.invoke('delete-script', p),
+
+  // recording lifecycle (floating bar + global shortcuts)
+  recordingStarted: (payload) => ipcRenderer.send('recording-started', payload),
+  recordingStopped: () => ipcRenderer.send('recording-stopped'),
+  sendElapsed: (payload) => ipcRenderer.send('rec-elapsed', payload),
+  onRemoteControl: (cb) => ipcRenderer.on('remote-control', (_e, which) => cb(which)),
+
+  // misc
+  openPath: (p) => ipcRenderer.invoke('open-path', p),
+  revealPath: (p) => ipcRenderer.invoke('reveal-path', p),
+})

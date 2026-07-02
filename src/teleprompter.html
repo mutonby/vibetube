@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    <style>
+      html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
+        font: 15px -apple-system, Helvetica, Arial, sans-serif; color: #fff; user-select: none; }
+      .tp {
+        margin: 6px; height: calc(100% - 12px); border-radius: 14px; overflow: hidden;
+        background: rgba(8,8,12,0.42); border: 1px solid #ffffff1f; box-shadow: 0 10px 34px #0006;
+        backdrop-filter: blur(2px); display: flex; flex-direction: column;
+      }
+      .bar {
+        -webkit-app-region: drag; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        padding: 6px 10px; background: rgba(8,8,12,0.55); border-bottom: 1px solid #ffffff14;
+      }
+      .bar .title { font-size: 11px; letter-spacing: 1px; color: #9a9ab0; text-transform: uppercase; margin-right: 2px; }
+      .bar button { -webkit-app-region: no-drag; cursor: pointer; border: 1px solid #ffffff22;
+        background: #ffffff14; color: #fff; border-radius: 7px; padding: 4px 9px; font-size: 12px; }
+      .bar button:hover { background: #ffffff26; }
+      .bar .play { background: #34d399; border-color: #34d399; color: #06231a; font-weight: 700; }
+      .bar .grp { display: flex; gap: 4px; align-items: center; }
+      .bar .lbl { font-size: 10px; color: #7a7a90; }
+      .bar input[type=range] { -webkit-app-region: no-drag; width: 70px; accent-color: #ff5a00; }
+      .bar select { -webkit-app-region: no-drag; background: #ffffff14; color: #fff; border: 1px solid #ffffff22;
+        border-radius: 7px; padding: 3px 6px; font-size: 11px; max-width: 150px; }
+      .bar .saved { font-size: 10px; color: #34d399; min-width: 54px; }
+      #text {
+        -webkit-app-region: no-drag; flex: 1; width: 100%; box-sizing: border-box;
+        overflow-y: auto; resize: none; border: 0; outline: none; background: transparent;
+        color: #fff; font-size: 30px; line-height: 1.5; font-weight: 600;
+        padding: 36px 36px 60%; white-space: pre-wrap;
+        text-shadow: 0 1px 4px rgba(0,0,0,0.95), 0 0 2px rgba(0,0,0,0.9);
+        user-select: text; -webkit-user-select: text; caret-color: #ff5a00;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="tp" id="tp">
+      <div class="bar">
+        <span class="title">Prompter</span>
+        <select id="loadSel" title="Cargar guion"><option value="">— guion —</option></select>
+        <button id="play" class="play">▶</button>
+        <span class="grp"><span class="lbl">vel</span><button id="slower">−</button><button id="faster">＋</button></span>
+        <span class="grp"><span class="lbl">texto</span><button id="smaller">A−</button><button id="bigger">A＋</button></span>
+        <span class="grp"><span class="lbl">opac</span><input id="opacity" type="range" min="10" max="100" value="42" /></span>
+        <button id="save" title="Guardar texto">💾</button>
+        <span id="saved" class="saved"></span>
+        <button id="restart" title="Volver arriba">↺</button>
+        <button id="close" title="Cerrar">✕</button>
+      </div>
+      <textarea id="text" spellcheck="false" placeholder="Escribe aquí tu guion…"></textarea>
+    </div>
+    <script src="teleprompter.js"></script>
+  </body>
+</html>
