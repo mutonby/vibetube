@@ -6,6 +6,18 @@
 
 const el = (id) => document.getElementById(id)
 
+// Surface any uncaught error/rejection (forwarded to the terminal by main.js and
+// shown in the in-app log) so recording bugs while the window is hidden aren't silent.
+window.addEventListener('error', (e) => {
+  console.error('[uncaught]', e.message, e.filename, e.lineno, e.error && e.error.stack)
+  try { log(`⚠ error: ${e.message}`, 'err') } catch { /* log not ready */ }
+})
+window.addEventListener('unhandledrejection', (e) => {
+  const r = e.reason
+  console.error('[unhandledrejection]', (r && (r.stack || r.message)) || r)
+  try { log(`⚠ promesa fallida: ${(r && r.message) || r}`, 'err') } catch { /* log not ready */ }
+})
+
 const state = {
   sources: [],
   selectedSourceId: null,
@@ -21,6 +33,17 @@ const state = {
   micId: localStorage.getItem('rs_mic') || '',
   blur: localStorage.getItem('rs_blur') === '1',
   blurLevel: Math.max(0, Math.min(100, parseInt(localStorage.getItem('rs_blurlevel') ?? '50', 10) || 50)),
+  bgPath: localStorage.getItem('rs_bgpath') || '', // virtual background image (empty = blur mode)
+  bgData: null, // { path, name, dataUrl } loaded on demand from bgPath
+  crop: localStorage.getItem('rs_crop') === '1', // record only a sub-rectangle of the cam
+  cropRect: loadCropRect(),                       // { x, y, w, h } normalised [0..1]
+  cropAr: (() => { const v = localStorage.getItem('rs_crop_ar'); return v && v !== 'free' ? parseFloat(v) : null })(), // locked pixel w/h, null = free
+  cropPipe: null,          // CamCrop instance, alive only while recording
+  recWebcamDims: null,     // real dims of the recorded (possibly cropped) cam
+  sysAudio: localStorage.getItem('rs_sysaudio') === '1', // mix desktop sound with the mic
+  sysStream: null,         // loopback system-audio MediaStream
+  mixNodes: null,          // { ctx, dest, micSrc, sysSrc } Web-Audio mixer graph
+  mixedAudioTrack: null,   // mic+system combined track fed to the recorder
   rawCam: null,
   pipe: null,
   camStream: null,
@@ -40,6 +63,15 @@ const state = {
   pauseStart: 0,
   timerInt: null,
   composing: false,
+}
+
+// Persisted crop rectangle (normalised). Defaults to a centred 60%-wide box.
+function loadCropRect() {
+  try {
+    const r = JSON.parse(localStorage.getItem('rs_crop_rect') || 'null')
+    if (r && [r.x, r.y, r.w, r.h].every((n) => typeof n === 'number')) return r
+  } catch { /* ignore */ }
+  return { x: 0.2, y: 0.1, w: 0.6, h: 0.8 }
 }
 
 function log(msg, cls = '') {
@@ -164,15 +196,16 @@ async function discardTake(restart) {
   state.discarding = true
   el('pauseBtn').disabled = true; el('stopBtn').disabled = true
   clearInterval(state.timerInt)
-  const stopped = state.recorders.map((r) => new Promise((res) => { r.onstop = res; r.stop() }))
-  await Promise.all(stopped)
+  await stopRecorders(state.recorders)
+  teardownCrop()
   state.recording = false; state.paused = false; state.discarding = false
   state.chunks = { screen: [], webcam: [] }
-  window.studio.recordingStopped()
   log('toma descartada (no guardada)', 'err')
   el('timer').textContent = '00:00'
-  if (restart) beginRecording()
-  else { setStatus('listo'); updateReady() }
+  // The ↺ button always comes from the floating bar: re-record in place instead
+  // of restoring the main window and running a (now-hidden) countdown.
+  if (restart) startRecording(true)
+  else { window.studio.recordingStopped(); setStatus('listo'); updateReady() }
 }
 
 async function recordWithScript() {
@@ -572,11 +605,29 @@ function renderSources() {
   const grid = el('sourcesGrid'); grid.innerHTML = ''
   for (const s of state.sources) {
     const card = document.createElement('div')
-    card.className = 'source-card' + (s.id === state.selectedSourceId ? ' selected' : '')
-    card.innerHTML = `<img src="${s.thumbnail}" alt="" /><div class="cap"><div class="kind">${s.kind === 'screen' ? 'pantalla' : 'ventana'}</div>${s.name}</div>`
+    const sel = s.id === state.selectedSourceId
+    card.className = 'source-card' + (sel ? ' selected' : '') + (s.isApp ? ' is-app' : '')
+    const kind = s.kind === 'screen' ? '🖥 pantalla' : '🪟 ventana'
+    const meta = s.detail ? `<span class="src-detail">${escapeHtml(s.detail)}</span>` : ''
+    card.innerHTML = `<img src="${s.thumbnail}" alt="" />
+      ${sel ? '<span class="src-live">● GRABANDO ESTO</span>' : ''}
+      <div class="cap">
+        <div class="kind">${kind}${meta}</div>
+        <div class="src-name">${escapeHtml(s.name)}</div>
+      </div>`
     card.addEventListener('click', () => selectSource(s.id))
     grid.appendChild(card)
   }
+  updateScreenCaption()
+}
+// Reflect the chosen source right under the big preview so it's unmistakable.
+function updateScreenCaption() {
+  const cap = el('screenCap')
+  if (!cap) return
+  const s = state.sources.find((x) => x.id === state.selectedSourceId)
+  if (!s) { cap.textContent = 'Pantalla — elige una fuente arriba'; return }
+  const extra = s.detail ? ` · ${s.detail}` : ''
+  cap.textContent = `${s.kind === 'screen' ? '🖥' : '🪟'} ${s.name}${extra}`
 }
 async function selectSource(id) {
   if (state.recording) return
@@ -650,8 +701,13 @@ async function startCamPreview() {
     state.rawCam = raw
     let out = raw
     if (state.blur && window.CamPipe) {
+      await ensureBgLoaded()
       state.pipe = new CamPipe()
-      out = await state.pipe.start(raw, { blur: true, blurAmount: state.blurLevel / 100 })
+      out = await state.pipe.start(raw, {
+        blur: true,
+        blurAmount: state.blurLevel / 100,
+        background: state.bgData ? state.bgData.dataUrl : null,
+      })
     }
     state.camStream = out
     el('camPreview').srcObject = out
@@ -659,7 +715,14 @@ async function startCamPreview() {
     state.dims.webcam = { width: st.width || 1280, height: st.height || 720 }
     el('blurToggle').checked = state.blur
     syncBlurUi()
+    syncCropUi() // crop is a UI overlay on the full preview; it's applied at record time
     startMeter(raw)
+    // Restore/rebuild the mic+system audio mix (the mic track just changed identity).
+    el('sysAudioToggle').checked = state.sysAudio
+    if (state.sysAudio) {
+      if (!state.sysStream) { const ok = await enableSystemAudio(); if (!ok) { state.sysAudio = false; el('sysAudioToggle').checked = false } }
+      else buildAudioMix()
+    }
     await listDevices()
   } catch (e) {
     const hint = {
@@ -678,6 +741,72 @@ function syncBlurUi() {
   if (row) row.style.display = state.blur ? '' : 'none'
   const sl = el('blurLevel')
   if (sl) sl.value = String(state.blurLevel)
+  const bgRow = el('bgRow')
+  if (bgRow) bgRow.style.display = state.blur ? '' : 'none'
+  const sel2 = el('bgSelect')
+  const isPreset = sel2 && state.bgPath && [...sel2.options].some((o) => o.value === state.bgPath)
+  if (sel2) sel2.value = isPreset ? state.bgPath : ''
+  const name = el('bgName')
+  if (name) name.textContent = state.bgPath && !isPreset ? (state.bgData?.name || state.bgPath.split('/').pop()) : ''
+  const clear = el('bgClear')
+  if (clear) clear.style.display = state.bgPath ? '' : 'none'
+}
+
+// Load the persisted background image (as data URL) the first time it's needed.
+async function ensureBgLoaded() {
+  if (!state.bgPath || state.bgData) return
+  state.bgData = await window.studio.loadBackground(state.bgPath)
+  if (!state.bgData) {
+    log('la imagen de fondo guardada ya no existe, se quita', 'warn')
+    state.bgPath = ''
+    localStorage.removeItem('rs_bgpath')
+  }
+  syncBlurUi()
+}
+
+async function applyBackground(res) {
+  state.bgPath = res.path
+  state.bgData = res
+  localStorage.setItem('rs_bgpath', res.path)
+  syncBlurUi()
+  if (state.pipe && state.pipe.setBackground) await state.pipe.setBackground(res.dataUrl)
+}
+
+async function pickBackground() {
+  if (state.recording) return // fixed during capture
+  const res = await window.studio.pickBackground()
+  if (res) await applyBackground(res)
+}
+
+// Bundled presets (src/backgrounds/) → options in the #bgSelect dropdown.
+async function loadBgPresets() {
+  const sel = el('bgSelect')
+  if (!sel || sel.options.length > 1) return
+  try {
+    for (const p of await window.studio.listPresetBackgrounds()) {
+      const opt = document.createElement('option')
+      opt.value = p.path
+      opt.textContent = p.label
+      sel.appendChild(opt)
+    }
+  } catch { /* sin presets */ }
+}
+
+async function onBgSelect(e) {
+  if (state.recording) { syncBlurUi(); return }
+  const p = e.target.value
+  if (!p) return clearBackground()
+  const res = await window.studio.loadBackground(p)
+  if (res) await applyBackground(res)
+}
+
+async function clearBackground() {
+  if (state.recording) return
+  state.bgPath = ''
+  state.bgData = null
+  localStorage.removeItem('rs_bgpath')
+  syncBlurUi()
+  if (state.pipe && state.pipe.setBackground) await state.pipe.setBackground(null)
 }
 
 async function toggleBlur() {
@@ -696,6 +825,230 @@ function onBlurLevel(e) {
   if (state.pipe && state.pipe.setBlurAmount) state.pipe.setBlurAmount(state.blurLevel / 100)
 }
 
+// ---- Camera crop -----------------------------------------------------------
+// The preview always shows the FULL frame; a draggable/resizable box marks the
+// sub-rectangle that gets recorded. The crop is applied at record time by CamCrop.
+
+function teardownCrop() {
+  if (state.cropPipe) { try { state.cropPipe.stop() } catch { /* ignore */ } state.cropPipe = null }
+}
+
+// Camera pixel aspect (w/h). Normalised space is 1×1 over a non-square frame, so
+// a locked pixel ratio AR maps to a normalised ratio of AR × (frameH/frameW).
+function frameAspect() {
+  const d = state.dims.webcam
+  return (d && d.width && d.height) ? d.width / d.height : 16 / 9
+}
+
+function saveCropRect() { localStorage.setItem('rs_crop_rect', JSON.stringify(state.cropRect)) }
+
+function syncCropUi() {
+  const on = state.crop
+  el('cropToggle').checked = on
+  el('cropTools').style.display = on ? '' : 'none'
+  el('cropOverlay').classList.toggle('hidden', !on)
+  // reflect active aspect button
+  document.querySelectorAll('#cropTools .ar-btn').forEach((b) => {
+    const v = b.dataset.ar
+    const active = (v === 'free' && state.cropAr == null) || (v !== 'free' && state.cropAr != null && Math.abs(parseFloat(v) - state.cropAr) < 0.001)
+    b.classList.toggle('active', active)
+  })
+  if (on) positionCropBox()
+}
+
+// Place the box DOM element from the normalised rect (over the video element).
+function positionCropBox() {
+  const box = el('cropBox')
+  const r = state.cropRect
+  box.style.left = (r.x * 100) + '%'
+  box.style.top = (r.y * 100) + '%'
+  box.style.width = (r.w * 100) + '%'
+  box.style.height = (r.h * 100) + '%'
+}
+
+async function toggleCrop() {
+  if (state.recording) { el('cropToggle').checked = state.crop; return } // fixed during capture
+  state.crop = el('cropToggle').checked
+  localStorage.setItem('rs_crop', state.crop ? '1' : '0')
+  syncCropUi()
+}
+
+function setCropAspect(v) {
+  if (state.recording) return
+  state.cropAr = (v === 'free') ? null : parseFloat(v)
+  localStorage.setItem('rs_crop_ar', v)
+  if (state.cropAr != null) applyAspectToRect() // reshape the current box to the new ratio
+  syncCropUi()
+  saveCropRect()
+}
+
+// Reshape the current rect to the locked aspect, keeping its centre, clamped in.
+function applyAspectToRect() {
+  const r = { ...state.cropRect }
+  const cx = r.x + r.w / 2, cy = r.y + r.h / 2
+  const nRatio = state.cropAr / frameAspect() // desired normalised w/h
+  // keep area-ish: derive h from w
+  let w = r.w
+  let h = w / nRatio
+  if (h > 1) { h = 1; w = h * nRatio }
+  r.w = Math.min(w, 1); r.h = Math.min(h, 1)
+  r.x = Math.max(0, Math.min(cx - r.w / 2, 1 - r.w))
+  r.y = Math.max(0, Math.min(cy - r.h / 2, 1 - r.h))
+  state.cropRect = r
+}
+
+function resetCrop() {
+  if (state.recording) return
+  state.cropRect = { x: 0, y: 0, w: 1, h: 1 }
+  if (state.cropAr != null) applyAspectToRect()
+  saveCropRect(); syncCropUi()
+}
+
+// Pointer-driven move/resize of the crop box over the camera preview.
+function initCropInteractions() {
+  const overlay = el('cropOverlay')
+  const box = el('cropBox')
+  let drag = null
+
+  const frame = () => el('camPreview').getBoundingClientRect()
+  const clamp01 = (v) => Math.max(0, Math.min(1, v))
+
+  function onDown(e, mode) {
+    if (state.recording) return
+    e.preventDefault(); e.stopPropagation()
+    const f = frame()
+    drag = { mode, f, sx: e.clientX, sy: e.clientY, r0: { ...state.cropRect } }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp, { once: true })
+  }
+  function onMove(e) {
+    if (!drag) return
+    const dx = (e.clientX - drag.sx) / drag.f.width
+    const dy = (e.clientY - drag.sy) / drag.f.height
+    const r = { ...drag.r0 }
+    if (drag.mode === 'move') {
+      r.x = clamp01(drag.r0.x + dx); r.y = clamp01(drag.r0.y + dy)
+      if (r.x + r.w > 1) r.x = 1 - r.w
+      if (r.y + r.h > 1) r.y = 1 - r.h
+    } else {
+      resizeRect(r, drag.mode, dx, dy)
+    }
+    state.cropRect = r
+    positionCropBox()
+  }
+  function onUp() {
+    drag = null
+    window.removeEventListener('pointermove', onMove)
+    saveCropRect()
+  }
+
+  box.addEventListener('pointerdown', (e) => onDown(e, 'move'))
+  box.querySelectorAll('.ch').forEach((h) => {
+    const mode = h.classList.contains('tl') ? 'tl' : h.classList.contains('tr') ? 'tr' : h.classList.contains('bl') ? 'bl' : 'br'
+    h.addEventListener('pointerdown', (e) => onDown(e, mode))
+  })
+  // suppress the drag region so moving the box doesn't move the window
+  overlay.addEventListener('pointerdown', (e) => e.stopPropagation())
+}
+
+// Resize `r` in place by dragging corner `mode`; honour a locked aspect if set.
+function resizeRect(r, mode, dx, dy) {
+  const MIN = 0.05
+  const ar = state.cropAr != null ? state.cropAr / frameAspect() : null // normalised w/h
+  const left = mode === 'tl' || mode === 'bl'
+  const top = mode === 'tl' || mode === 'tr'
+  // anchor = the opposite corner (stays fixed)
+  const ax = left ? r.x + r.w : r.x
+  const ay = top ? r.y + r.h : r.y
+  // moving edge, clamped to the frame
+  let mx = Math.max(0, Math.min(1, (left ? r.x : r.x + r.w) + dx))
+  let my = Math.max(0, Math.min(1, (top ? r.y : r.y + r.h) + dy))
+  let w = Math.abs(mx - ax)
+  let h = Math.abs(my - ay)
+  if (ar) {
+    // drive height from width to keep the ratio, then re-clamp
+    h = w / ar
+    if (top ? (ay - h < 0) : (ay + h > 1)) { h = top ? ay : 1 - ay; w = h * ar }
+    if (left ? (ax - w < 0) : (ax + w > 1)) { w = left ? ax : 1 - ax; h = w / ar }
+  }
+  w = Math.max(MIN, w); h = Math.max(MIN, h)
+  r.w = w; r.h = h
+  r.x = left ? ax - w : ax
+  r.y = top ? ay - h : ay
+}
+
+// ---- System audio (loopback) + mic mix ------------------------------------
+// Captures desktop sound via getDisplayMedia (main.js hands back `loopback`
+// audio) and mixes it with the mic into ONE track, so webcam.webm carries
+// voice + system — the single audio source the editor already expects.
+
+async function toggleSysAudio() {
+  if (state.recording) { el('sysAudioToggle').checked = state.sysAudio; return } // fixed during capture
+  const want = el('sysAudioToggle').checked
+  if (want) {
+    const ok = await enableSystemAudio()
+    if (!ok) { el('sysAudioToggle').checked = false; return }
+  } else {
+    disableSystemAudio()
+  }
+  state.sysAudio = el('sysAudioToggle').checked
+  localStorage.setItem('rs_sysaudio', state.sysAudio ? '1' : '0')
+}
+
+async function enableSystemAudio() {
+  try {
+    // video is mandatory for getDisplayMedia; we keep only the audio track.
+    const disp = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+    disp.getVideoTracks().forEach((t) => t.stop())
+    const sysTrack = disp.getAudioTracks()[0]
+    if (!sysTrack) {
+      log('este macOS/Electron no entregó audio del sistema (loopback no disponible)', 'err')
+      disp.getTracks().forEach((t) => t.stop())
+      return false
+    }
+    state.sysStream = new MediaStream([sysTrack])
+    buildAudioMix()
+    log('🔊 sonido del sistema activado (se mezcla con tu voz)', 'ok')
+    return true
+  } catch (e) {
+    log(`no se pudo capturar el sonido del sistema [${e.name}]: ${e.message}`, 'err')
+    return false
+  }
+}
+
+function disableSystemAudio() {
+  teardownMix()
+  if (state.sysStream) { stopStream(state.sysStream); state.sysStream = null }
+}
+
+// (Re)build the mic+system mixer. Called when enabling system audio and again
+// whenever the camera/mic restarts (the mic track changes identity).
+function buildAudioMix() {
+  teardownMix()
+  if (!state.sysAudio && !el('sysAudioToggle').checked) return
+  const micTrack = state.rawCam && state.rawCam.getAudioTracks()[0]
+  const sysTrack = state.sysStream && state.sysStream.getAudioTracks()[0]
+  if (!micTrack || !sysTrack) return
+  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)()
+  if (audioCtx.state === 'suspended') audioCtx.resume()
+  const dest = audioCtx.createMediaStreamDestination()
+  const micSrc = audioCtx.createMediaStreamSource(new MediaStream([micTrack]))
+  const sysSrc = audioCtx.createMediaStreamSource(new MediaStream([sysTrack]))
+  micSrc.connect(dest); sysSrc.connect(dest)
+  state.mixNodes = { dest, micSrc, sysSrc }
+  state.mixedAudioTrack = dest.stream.getAudioTracks()[0]
+}
+
+function teardownMix() {
+  if (state.mixNodes) {
+    try { state.mixNodes.micSrc.disconnect() } catch { /* ignore */ }
+    try { state.mixNodes.sysSrc.disconnect() } catch { /* ignore */ }
+    try { state.mixNodes.dest.disconnect() } catch { /* ignore */ }
+    state.mixNodes = null
+  }
+  state.mixedAudioTrack = null
+}
+
 function stopStream(stream) { if (stream) for (const t of stream.getTracks()) t.stop() }
 
 // Release the webcam + mic (turns off the camera light) when we leave the
@@ -704,6 +1057,7 @@ function stopCam() {
   if (state.recording) return
   if (state.pipe) { state.pipe.stop(); state.pipe = null }
   stopMeter()
+  disableSystemAudio() // release the loopback capture (keeps the pref for next time)
   if (state.camStream && state.camStream !== state.rawCam) stopStream(state.camStream)
   stopStream(state.rawCam)
   state.camStream = null
@@ -783,24 +1137,51 @@ async function beginRecording() {
   el('recBtn').disabled = true; setStatus('preparando')
   await runCountdown(3); startRecording()
 }
-function startRecording() {
+// `fromFloat`: the recording was (re)started from the floating bar, so the main
+// window is already hidden and the bar + shortcuts are already up — don't re-arm them.
+function startRecording(fromFloat = false) {
   if (!state.screenStream || !state.camStream) { log('faltan streams', 'err'); return }
   state.chunks = { screen: [], webcam: [] }
+  // The preview keeps showing the FULL frame; the recorder gets the cropped one.
+  let camForRec = state.camStream
+  state.recWebcamDims = null
+  if (state.crop && state.cropRect && window.CamCrop) {
+    try {
+      state.cropPipe = new CamCrop()
+      camForRec = state.cropPipe.start(state.camStream, state.cropRect)
+      state.recWebcamDims = state.cropPipe.outDims
+      log(`✂️ grabando recorte ${state.recWebcamDims.width}×${state.recWebcamDims.height}`)
+    } catch (e) { log('recorte falló, grabo cámara completa: ' + e.message, 'warn'); camForRec = state.camStream; state.cropPipe = null }
+  }
+  // Pick the audio track for the cam recorder: the mic+system MIX when enabled,
+  // otherwise the plain mic. webcam.webm stays the single audio source.
+  const recVideoTrack = camForRec.getVideoTracks()[0]
+  const recAudioTrack = (state.sysAudio && state.mixedAudioTrack) ? state.mixedAudioTrack : state.camStream.getAudioTracks()[0]
+  if (recVideoTrack && recAudioTrack) camForRec = new MediaStream([recVideoTrack, recAudioTrack])
+  if (state.sysAudio && state.mixedAudioTrack) log('🔊 grabando voz + sonido del sistema')
+  console.log('[rec] cam tracks', camForRec.getTracks().map((t) => `${t.kind}:${t.readyState}`).join(','),
+    '| screen', state.screenStream.getTracks().map((t) => `${t.kind}:${t.readyState}`).join(','))
+  // If a recorded track ends mid-take (a stalled crop/mix generator), that's the
+  // classic "stop does nothing" freeze — log it loudly.
+  camForRec.getTracks().forEach((t) => t.addEventListener('ended', () => { console.error('[rec] cam track ENDED mid-recording:', t.kind); log(`⚠ pista ${t.kind} se cortó durante la grabación`, 'err') }))
   const screenRec = new MediaRecorder(state.screenStream, { mimeType: pickMime(false), videoBitsPerSecond: 8_000_000 })
-  const camRec = new MediaRecorder(state.camStream, { mimeType: pickMime(true), videoBitsPerSecond: 4_000_000 })
+  const camRec = new MediaRecorder(camForRec, { mimeType: pickMime(true), videoBitsPerSecond: 4_000_000 })
   screenRec.ondataavailable = (e) => { if (e.data.size) state.chunks.screen.push(e.data) }
   camRec.ondataavailable = (e) => { if (e.data.size) state.chunks.webcam.push(e.data) }
   screenRec.onstart = () => { state.starts.screen = performance.now() }
   camRec.onstart = () => { state.starts.webcam = performance.now() }
+  screenRec.onerror = (e) => { console.error('[rec] screenRec error', e.error); log('⚠ error grabador pantalla: ' + (e.error && e.error.message), 'err') }
+  camRec.onerror = (e) => { console.error('[rec] camRec error', e.error); log('⚠ error grabador cámara: ' + (e.error && e.error.message), 'err') }
   state.recorders = [screenRec, camRec]
-  screenRec.start(1000); camRec.start(1000)
+  try { screenRec.start(1000); camRec.start(1000) } catch (e) { console.error('[rec] start() falló', e); log('⚠ no se pudo iniciar la grabación: ' + e.message, 'err') }
 
   state.recording = true; state.paused = false; state.pausedTotal = 0; state.tStart = performance.now()
   setStatus('grabando', 'recording')
   el('pauseBtn').disabled = false; el('pauseBtn').textContent = '⏸ Pausar'; el('pauseBtn').className = 'pause'
   el('stopBtn').disabled = false; el('recHint').textContent = ''
   log('● grabando…')
-  window.studio.recordingStarted({ camId: state.camId, blur: state.blur }) // hide window + self-view bar + shortcuts
+  if (!fromFloat) window.studio.recordingStarted({ camId: state.camId, blur: state.blur, blurLevel: state.blurLevel, bg: state.bgData ? state.bgData.dataUrl : null, crop: state.crop, cropRect: state.crop ? state.cropRect : null }) // hide window + self-view bar + shortcuts
+  else window.studio.sendElapsed({ text: '00:00', paused: false }) // flip the floating bar back to recording mode at once
   state.timerInt = setInterval(updateTimer, 250)
 }
 function pauseResume() {
@@ -827,18 +1208,50 @@ function updateTimer() {
   el('timer').textContent = txt
   window.studio.sendElapsed({ text: txt, paused: state.paused })
 }
-async function stopRecording() {
+// Stop every recorder and wait for its final data — but never hang: if a
+// recorder's `onstop` never fires (e.g. a stalled crop/mix track), a timeout
+// resolves it so the UI/window always recovers.
+function stopRecorders(recorders) {
+  return Promise.all(recorders.map((r) => new Promise((res) => {
+    let done = false
+    const finish = () => { if (!done) { done = true; res() } }
+    try {
+      if (!r || r.state === 'inactive') return finish()
+      r.onstop = finish
+      r.stop()
+    } catch { finish() }
+    setTimeout(finish, 5000)
+  })))
+}
+
+// `returnToMain=false` (the floating ■ button): finalize + save the clip but stay
+// in floating mode so the user can immediately grab another clip. `true` (from the
+// main window, or the floating ✓): also restore the main window.
+async function stopRecording(returnToMain = true) {
   if (!state.recording) return
   el('pauseBtn').disabled = true; el('stopBtn').disabled = true; setStatus('procesando')
   clearInterval(state.timerInt)
   const durationMs = elapsedMs()
-  const stopped = state.recorders.map((r) => new Promise((res) => { r.onstop = res; r.stop() }))
-  await Promise.all(stopped)
+  await stopRecorders(state.recorders)
+  teardownCrop() // stop the crop pipeline once the recorder has flushed its last frame
   state.recording = false; state.paused = false
-  window.studio.recordingStopped() // restore window, kill floating bar + shortcuts
+  if (returnToMain) window.studio.recordingStopped() // restore window, kill floating bar + shortcuts
   updateReady()
   await saveClip(durationMs) // sets the post-save hint last, so it isn't overwritten
+  if (!returnToMain) window.studio.floatIdle({ clips: state.detail ? state.detail.clipCount : 0 }) // stay floating, flip bar to idle
   setStatus('hecho', 'done')
+}
+// Floating ● button: start the next clip without reopening the main window.
+function recordFromFloat() {
+  if (state.recording || !state.current) return
+  if (!state.screenStream || !state.camStream) { log('faltan streams', 'err'); return }
+  startRecording(true)
+}
+// Floating ✓ button: end the session and go back to the main window
+// (saving the in-progress clip first if we're still recording).
+async function finishFromFloat() {
+  if (state.recording) await stopRecording(true)
+  else window.studio.recordingStopped()
 }
 async function saveClip(durationMs) {
   const screenBlob = new Blob(state.chunks.screen, { type: 'video/webm' })
@@ -850,7 +1263,7 @@ async function saveClip(durationMs) {
     screenBuf: await screenBlob.arrayBuffer(),
     webcamBuf: await camBlob.arrayBuffer(),
     durationMs, offsetMs,
-    dims: { screen: actualDims(el('screenPreview'), state.dims.screen), webcam: actualDims(el('camPreview'), state.dims.webcam) },
+    dims: { screen: actualDims(el('screenPreview'), state.dims.screen), webcam: state.recWebcamDims || actualDims(el('camPreview'), state.dims.webcam) },
   })
   const idx = state.projects.findIndex((p) => p.dir === summary.dir)
   if (idx >= 0) state.projects[idx] = summary; else state.projects.unshift(summary)
@@ -950,9 +1363,17 @@ el('camSelect').addEventListener('change', changeCam)
 el('micSelect').addEventListener('change', changeMic)
 el('blurToggle').addEventListener('change', toggleBlur)
 el('blurLevel').addEventListener('input', onBlurLevel)
+el('bgPick').addEventListener('click', pickBackground)
+el('bgClear').addEventListener('click', clearBackground)
+el('bgSelect').addEventListener('change', onBgSelect)
+el('sysAudioToggle').addEventListener('change', toggleSysAudio)
+el('cropToggle').addEventListener('change', toggleCrop)
+el('cropReset').addEventListener('click', resetCrop)
+document.querySelectorAll('#cropTools .ar-btn').forEach((b) => b.addEventListener('click', () => setCropAspect(b.dataset.ar)))
+initCropInteractions()
 el('recBtn').addEventListener('click', beginRecording)
 el('pauseBtn').addEventListener('click', pauseResume)
-el('stopBtn').addEventListener('click', stopRecording)
+el('stopBtn').addEventListener('click', () => stopRecording(true))
 el('composeBtn').addEventListener('click', composeProject)
 el('cancelBtn').addEventListener('click', cancelCompose)
 el('iterateBtn').addEventListener('click', iterateProject)
@@ -973,9 +1394,12 @@ el('videoModalClose').addEventListener('click', closeVideo)
 
 // global shortcut / floating bar control routed from main
 window.studio.onRemoteControl((which) => {
+  // `record` / `done` act while idle (between clips); the rest need an active take.
+  if (which === 'record') return recordFromFloat()
+  if (which === 'done') return finishFromFloat()
   if (!state.recording) return
   if (which === 'pause') pauseResume()
-  else if (which === 'stop') stopRecording()
+  else if (which === 'stop') stopRecording(false) // save clip, keep floating
   else if (which === 'restart') discardTake(true)
 })
 window.studio.onTpClosed(() => { state.tpVisible = false; updateTpToggle() })
@@ -992,6 +1416,7 @@ window.studio.onTpLoaded(async ({ path, text }) => {
 })
 
 window.addEventListener('DOMContentLoaded', async () => {
+  loadBgPresets()
   await loadSources()
   showHome() // camera stays OFF until you enter the Record view
 })

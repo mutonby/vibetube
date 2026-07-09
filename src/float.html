@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; media-src 'self' blob: mediastream:; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' blob: data:; style-src 'self' 'unsafe-inline';" />
+          content="default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' blob: data:; style-src 'self' 'unsafe-inline';" />
     <style>
       html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
         font: 13px -apple-system, Helvetica, Arial, sans-serif; color: #fff; user-select: none; }
@@ -20,12 +20,19 @@
       .dot { width: 10px; height: 10px; border-radius: 50%; background: #ff2d55;
         box-shadow: 0 0 10px #ff2d55; animation: blink 1s infinite; }
       body.paused .dot { background: #f5a623; box-shadow: 0 0 10px #f5a623; animation: none; }
+      body.idle .dot { background: #4a4a5a; box-shadow: none; animation: none; }
       @keyframes blink { 50% { opacity: .3; } }
-      .t { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 14px; flex: 1; }
+      .t { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 14px; flex: 1;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .b { -webkit-app-region: no-drag; cursor: pointer; border: 1px solid #ffffff22;
         background: #ffffff14; color: #fff; border-radius: 8px; padding: 5px 9px; font-size: 13px; }
       .b:hover { background: #ffffff28; }
       .b.stop { background: #ff2d55; border-color: #ff2d55; }
+      .b.rec { background: #ff2d55; border-color: #ff2d55; font-weight: 700; }
+      .b.done { background: #2ecc71; border-color: #2ecc71; }
+      /* Show recording controls only while recording, idle controls only when idle */
+      body.idle .rc { display: none; }
+      body:not(.idle) .ic { display: none; }
     </style>
   </head>
   <body>
@@ -34,13 +41,16 @@
       <div class="bar">
         <span class="dot"></span>
         <span id="t" class="t">00:00</span>
-        <button id="r" class="b" title="Reiniciar toma (descarta)">↺</button>
-        <button id="p" class="b">⏸</button>
-        <button id="s" class="b stop">■</button>
+        <button id="r" class="b rc" title="Reiniciar toma (descarta)">↺</button>
+        <button id="p" class="b rc" title="Pausar / seguir">⏸</button>
+        <button id="s" class="b stop rc" title="Terminar clip (sigues grabando)">■</button>
+        <button id="rec" class="b rec ic" title="Grabar otro clip">●</button>
+        <button id="done" class="b done ic" title="Terminar y volver a la ventana">✓</button>
       </div>
     </div>
-    <script src="vendor/mediapipe/selfie_segmentation.js"></script>
+    <script src="vendor/vb/virtual-background.js"></script>
     <script src="campipe.js"></script>
+    <script src="camcrop.js"></script>
     <script src="float.js"></script>
   </body>
 </html>

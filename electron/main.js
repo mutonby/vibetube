@@ -7,6 +7,11 @@ const { pathToFileURL } = require('url')
 const { spawnSync, spawn } = require('child_process')
 const { Readable } = require('stream')
 
+// The renderer is served over file:// (loadFile) and the background-blur
+// library (vendor/vb) runs its segmenter in a Web Worker loaded by URL —
+// Chromium blocks file:// workers unless this switch is set.
+app.commandLine.appendSwitch('allow-file-access-from-files')
+
 const MIME = {
   '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm',
   '.m4v': 'video/mp4', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
@@ -44,6 +49,23 @@ function createWindow() {
     },
   })
   mainWindow.loadFile(path.join(__dirname, '..', 'src', 'index.html'))
+
+  // Forward renderer console + errors to the main process stdout so recording
+  // bugs (which happen while the window is hidden) show up in the terminal/log.
+  mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    const src = (sourceId || '').split('/').pop()
+    console.log(`[renderer${level >= 2 ? ':ERR' : ''}] ${message}${line ? ` (${src}:${line})` : ''}`)
+  })
+
+  // System-audio loopback: when the renderer calls getDisplayMedia({audio:true}),
+  // hand it a screen source + `loopback` audio so we can mix desktop sound with
+  // the mic. `loopback` (not `loopbackWithMute`) keeps the sound audible on the
+  // speakers. The renderer only keeps the AUDIO track and discards the video.
+  mainWindow.webContents.session.setDisplayMediaRequestHandler((request, callback) => {
+    desktopCapturer.getSources({ types: ['screen'] })
+      .then((sources) => callback(sources[0] ? { video: sources[0], audio: 'loopback' } : {}))
+      .catch(() => callback({}))
+  }, { useSystemPicker: false })
 }
 
 app.whenReady().then(() => {
@@ -150,6 +172,12 @@ ipcMain.on('recording-stopped', () => {
 
 ipcMain.on('rec-elapsed', (_e, payload) => {
   if (floatWindow) floatWindow.webContents.send('rec-elapsed', payload)
+})
+
+// A clip was saved but the user stays in "floating" mode to record more clips:
+// keep the main window hidden and just flip the floating bar to its idle UI.
+ipcMain.on('float-idle', (_e, payload) => {
+  if (floatWindow) floatWindow.webContents.send('float-idle', payload || {})
 })
 
 // from the floating bar buttons
@@ -655,12 +683,40 @@ ipcMain.handle('list-sources', async () => {
     thumbnailSize: { width: 320, height: 200 },
     fetchWindowIcons: false,
   })
-  return sources.map((s) => ({
-    id: s.id,
-    name: s.name,
-    kind: s.id.startsWith('screen') ? 'screen' : 'window',
-    thumbnail: s.thumbnail.toDataURL(),
-  }))
+  // Map screen capture-sources to real displays so the UI can say *which*
+  // monitor it is (nº, principal, resolución) instead of just "Entire screen".
+  const displays = screen.getAllDisplays()
+  const primaryId = screen.getPrimaryDisplay().id
+  const appName = app.getName()
+  return sources.map((s) => {
+    const isScreen = s.id.startsWith('screen')
+    let name = s.name
+    let detail = ''
+    if (isScreen) {
+      // desktopCapturer gives `display_id` as a string; match it to a display.
+      const di = displays.findIndex((d) => String(d.id) === String(s.display_id))
+      const disp = di >= 0 ? displays[di] : null
+      const num = di >= 0 ? di + 1 : (displays.length > 1 ? '?' : 1)
+      const isPrimary = disp ? disp.id === primaryId : displays.length <= 1
+      name = `Pantalla ${num}${isPrimary ? ' · principal' : ''}`
+      if (disp) {
+        const { width, height } = disp.size
+        detail = `${Math.round(width * disp.scaleFactor)}×${Math.round(height * disp.scaleFactor)}`
+      }
+    } else {
+      // A window: flag our own app so the user doesn't record the recorder.
+      detail = new RegExp(appName, 'i').test(s.name) ? 'esta app (record-studio)' : 'ventana'
+    }
+    return {
+      id: s.id,
+      name,
+      title: s.name, // original OS title, kept for windows
+      detail,
+      kind: isScreen ? 'screen' : 'window',
+      isApp: !isScreen && new RegExp(appName, 'i').test(s.name),
+      thumbnail: s.thumbnail.toDataURL(),
+    }
+  })
 })
 
 // ---- IPC: folders ----------------------------------------------------------
@@ -914,3 +970,52 @@ ipcMain.handle('delete-script', async (_e, p) => { try { await shell.trashItem(p
 
 ipcMain.handle('open-path', async (_e, p) => { if (p) await shell.openPath(p) })
 ipcMain.handle('reveal-path', async (_e, p) => { if (p) shell.showItemInFolder(p) })
+
+// ---- IPC: virtual background image ------------------------------------------
+// The renderer runs sandboxed over file://, so images are handed over as data:
+// URLs (small, ≤30 MB) instead of raw paths — the CSP allows img-src data:.
+
+const BG_MIME = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' }
+
+function backgroundDataUrl(p) {
+  const mime = BG_MIME[path.extname(p).toLowerCase()]
+  if (!mime) return null
+  if (fs.statSync(p).size > 30 * 1024 * 1024) return null
+  return `data:${mime};base64,${fs.readFileSync(p).toString('base64')}`
+}
+
+ipcMain.handle('pick-background', async () => {
+  const r = await dialog.showOpenDialog(mainWindow, {
+    title: 'Elige una imagen de fondo',
+    properties: ['openFile'],
+    filters: [{ name: 'Imágenes', extensions: ['jpg', 'jpeg', 'png', 'webp'] }],
+  })
+  if (r.canceled || !r.filePaths[0]) return null
+  try {
+    const p = r.filePaths[0]
+    const dataUrl = backgroundDataUrl(p)
+    return dataUrl ? { path: p, name: path.basename(p), dataUrl } : null
+  } catch { return null }
+})
+
+ipcMain.handle('load-background', (_e, p) => {
+  try {
+    const dataUrl = p ? backgroundDataUrl(p) : null
+    return dataUrl ? { path: p, name: path.basename(p), dataUrl } : null
+  } catch { return null }
+})
+
+// Bundled preset backgrounds (src/backgrounds/*.jpg|png|webp), label from filename.
+ipcMain.handle('list-preset-backgrounds', () => {
+  try {
+    const dir = path.join(__dirname, '..', 'src', 'backgrounds')
+    return fs.readdirSync(dir)
+      .filter((f) => BG_MIME[path.extname(f).toLowerCase()])
+      .sort()
+      .map((f) => {
+        const base = f.replace(/\.[^.]+$/, '')
+        const label = base.replace(/[-_]/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
+        return { label, path: path.join(dir, f) }
+      })
+  } catch { return [] }
+})

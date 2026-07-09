@@ -92,6 +92,7 @@ html, body {
   gap: 10px;
 }
 .source-card {
+  position: relative;
   border: 1px solid var(--line);
   border-radius: 10px;
   overflow: hidden;
@@ -108,13 +109,29 @@ html, body {
   width: 100%; display: block; aspect-ratio: 16/10; object-fit: cover;
   background: #000;
 }
+/* "GRABANDO ESTO" badge on the selected source, so it's unmistakable */
+.source-card .src-live {
+  position: absolute; top: 6px; left: 6px;
+  background: var(--accent); color: #fff;
+  font-size: 10px; font-weight: 700; letter-spacing: .5px;
+  padding: 3px 7px; border-radius: 6px;
+  box-shadow: 0 2px 8px #0007;
+}
 .source-card .cap {
   padding: 7px 9px; font-size: 12px; color: var(--txt);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.source-card .src-name {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;
 }
 .source-card .kind {
   font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px;
+  display: flex; gap: 6px; align-items: center;
 }
+.source-card .src-detail {
+  text-transform: none; letter-spacing: 0; color: var(--dim); opacity: .85;
+}
+.source-card.is-app { opacity: .7; }
+.source-card.is-app .src-name::after { content: ' ⚠'; }
 .empty { color: var(--dim); padding: 20px; text-align: center; }
 
 /* Stage */
@@ -135,6 +152,28 @@ html, body {
   border-radius: 10px; border: 1px solid var(--line); object-fit: cover;
 }
 .preview.cam video { aspect-ratio: 16/9; }
+
+/* Camera crop overlay: a draggable/resizable box over the FULL preview that
+   marks the sub-rectangle that will actually be recorded. */
+.cam-wrap { position: relative; line-height: 0; border-radius: 10px; overflow: hidden; }
+.crop-overlay { position: absolute; inset: 0; }
+.crop-overlay.hidden { display: none; }
+.crop-box {
+  position: absolute; box-sizing: border-box;
+  border: 2px solid var(--accent);
+  box-shadow: 0 0 0 4000px rgba(0, 0, 0, .5); /* dim everything outside the box */
+  cursor: move; border-radius: 4px;
+}
+.crop-box .ch {
+  position: absolute; width: 14px; height: 14px; background: var(--accent);
+  border: 2px solid #fff; border-radius: 50%;
+}
+.crop-box .tl { top: -8px; left: -8px; cursor: nwse-resize; }
+.crop-box .tr { top: -8px; right: -8px; cursor: nesw-resize; }
+.crop-box .bl { bottom: -8px; left: -8px; cursor: nesw-resize; }
+.crop-box .br { bottom: -8px; right: -8px; cursor: nwse-resize; }
+.crop-tools { gap: 4px; flex-wrap: wrap; }
+.ar-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 .controls {
   display: flex; align-items: center; justify-content: space-between;
@@ -353,6 +392,8 @@ button:disabled { opacity: .4; cursor: not-allowed; }
   white-space: pre-wrap; user-select: text;
 }
 button.mini { padding: 5px 9px; font-size: 11px; }
+.bg-row { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
+.bg-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--dim); }
 .danger { color: #ff7a8f; }
 button.danger:hover { background: #ff2d5522; }
 

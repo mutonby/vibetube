@@ -13,7 +13,7 @@
     "electron": "^33.2.0"
   },
   "dependencies": {
-    "@mediapipe/selfie_segmentation": "^0.1.1675465747",
+    "@vpalmisano/virtual-background": "^1.0.14",
     "hyperframes": "^0.6.121"
   }
 }

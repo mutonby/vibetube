@@ -49,8 +49,14 @@ contextBridge.exposeInMainWorld('studio', {
   // recording lifecycle (floating bar + global shortcuts)
   recordingStarted: (payload) => ipcRenderer.send('recording-started', payload),
   recordingStopped: () => ipcRenderer.send('recording-stopped'),
+  floatIdle: (payload) => ipcRenderer.send('float-idle', payload), // clip saved, stay floating
   sendElapsed: (payload) => ipcRenderer.send('rec-elapsed', payload),
   onRemoteControl: (cb) => ipcRenderer.on('remote-control', (_e, which) => cb(which)),
+
+  // virtual background image
+  pickBackground: () => ipcRenderer.invoke('pick-background'),
+  loadBackground: (p) => ipcRenderer.invoke('load-background', p),
+  listPresetBackgrounds: () => ipcRenderer.invoke('list-preset-backgrounds'),
 
   // misc
   openPath: (p) => ipcRenderer.invoke('open-path', p),

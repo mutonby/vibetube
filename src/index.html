@@ -186,20 +186,47 @@
               Intensidad
               <input type="range" id="blurLevel" min="0" max="100" value="50" />
             </label>
+            <span class="blur-toggle bg-row" id="bgRow" style="display:none">
+              🖼 Fondo
+              <select id="bgSelect"><option value="">— ninguno (blur) —</option></select>
+              <button id="bgPick" class="mini" type="button" title="Elegir una imagen tuya">…</button>
+              <span id="bgName" class="bg-name"></span>
+              <button id="bgClear" class="mini" type="button" style="display:none" title="Quitar fondo">✕</button>
+            </span>
+            <label class="blur-toggle"><input type="checkbox" id="cropToggle" /> ✂️ Recortar cámara</label>
+            <span class="blur-toggle crop-tools" id="cropTools" style="display:none">
+              Proporción
+              <button class="mini ar-btn" data-ar="free" type="button">Libre</button>
+              <button class="mini ar-btn" data-ar="1" type="button">1:1</button>
+              <button class="mini ar-btn" data-ar="0.8" type="button">4:5</button>
+              <button class="mini ar-btn" data-ar="0.5625" type="button">9:16</button>
+              <button class="mini" id="cropReset" type="button" title="Recuadro completo">Reiniciar</button>
+            </span>
           </div>
           <div class="meter-row">
             <span class="meter-lbl">Nivel de micro</span>
             <div class="meter"><div id="meterFill" class="meter-fill"></div></div>
+            <label class="blur-toggle" title="Mezcla el sonido del sistema (YouTube, música, apps…) con tu voz en una sola pista">
+              <input type="checkbox" id="sysAudioToggle" /> 🔊 Grabar sonido del sistema
+            </label>
           </div>
 
           <div class="previews">
             <figure class="preview">
-              <figcaption>Pantalla</figcaption>
+              <figcaption id="screenCap">Pantalla — elige una fuente arriba</figcaption>
               <video id="screenPreview" muted autoplay playsinline></video>
             </figure>
             <figure class="preview cam">
-              <figcaption>Cámara</figcaption>
-              <video id="camPreview" muted autoplay playsinline></video>
+              <figcaption id="camCap">Cámara</figcaption>
+              <div class="cam-wrap">
+                <video id="camPreview" muted autoplay playsinline></video>
+                <div id="cropOverlay" class="crop-overlay hidden">
+                  <div id="cropBox" class="crop-box">
+                    <span class="ch tl"></span><span class="ch tr"></span>
+                    <span class="ch bl"></span><span class="ch br"></span>
+                  </div>
+                </div>
+              </div>
             </figure>
           </div>
 
@@ -317,8 +344,9 @@
       </div>
     </div>
 
-    <script src="vendor/mediapipe/selfie_segmentation.js"></script>
+    <script src="vendor/vb/virtual-background.js"></script>
     <script src="campipe.js"></script>
+    <script src="camcrop.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

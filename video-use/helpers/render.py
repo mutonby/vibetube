@@ -705,9 +705,15 @@ def apply_loudnorm_two_pass(
     In preview mode, skips the measurement pass and uses a one-pass approximation
     for speed. Final mode always does the proper two-pass.
     """
+    # aresample=async first: if the input audio still carries concat PTS jitter
+    # (e.g. no-SFX renders where the composite stream-copied the base), the
+    # loudnorm re-encode would turn it into schedule holes and A/V drift.
     if preview:
         # One-pass approximation — faster, slightly less accurate.
-        filter_str = f"loudnorm=I={LOUDNORM_I}:TP={LOUDNORM_TP}:LRA={LOUDNORM_LRA}"
+        filter_str = (
+            "aresample=async=1000:first_pts=0,"
+            f"loudnorm=I={LOUDNORM_I}:TP={LOUDNORM_TP}:LRA={LOUDNORM_LRA}"
+        )
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-nostats",
             "-i", str(input_path),
@@ -732,6 +738,7 @@ def apply_loudnorm_two_pass(
           f"TP={measurement['input_tp']}  LRA={measurement['input_lra']}")
 
     filter_str = (
+        "aresample=async=1000:first_pts=0,"
         f"loudnorm=I={LOUDNORM_I}:TP={LOUDNORM_TP}:LRA={LOUDNORM_LRA}"
         f":measured_I={measurement['input_i']}"
         f":measured_TP={measurement['input_tp']}"
@@ -831,8 +838,13 @@ def build_final_composite(
         # late offsets (it overshoots well past the longest actual input). SFX are
         # mixed UNDER the voice and always end before it, so clamping to the base
         # loses nothing and keeps audio length == video length.
+        # aresample=async first: a lossless-concat base carries small AAC-priming
+        # PTS overlaps at every segment boundary; fed raw into amix they become
+        # large forward holes in the encoded schedule (audio ends up seconds
+        # shorter than video and playback drifts progressively out of sync).
+        filter_parts.append("[0:a]aresample=async=1000:first_pts=0[abase]")
         filter_parts.append(
-            f"[0:a]{''.join(sfx_labels)}amix=inputs={1 + len(sfx)}:normalize=0:"
+            f"[abase]{''.join(sfx_labels)}amix=inputs={1 + len(sfx)}:normalize=0:"
             f"duration=first:dropout_transition=0,alimiter=limit=0.95[outa]"
         )
         audio_map, audio_codec = "[outa]", ["-c:a", "aac", "-b:a", "192k", "-ar", "48000"]

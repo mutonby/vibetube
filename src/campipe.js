@@ -1,186 +1,168 @@
 'use strict'
 
 // ----------------------------------------------------------------------------
-// CamPipe — shared webcam processor with optional real-time background blur
-// (MediaPipe Selfie Segmentation), drawn to an offscreen canvas.
+// CamPipe — thin wrapper around @vpalmisano/virtual-background (vendored in
+// vendor/vb/) for real-time background blur on the webcam track.
 //
-// Used by both the recorder (main window) and the self-view (floating window).
-// Fail-safe: if MediaPipe is missing or errors, it passes the camera through
-// unblurred so recording/preview never break.
+// The heavy lifting happens inside the library: MediaPipe ImageSegmenter
+// (selfie_multiclass model) + a WebGL shader pipeline with temporal smoothing
+// and smoothstep edge thresholding, delivered through MediaStreamTrack
+// Insertable Streams (MediaStreamTrackProcessor). That replaces the old
+// hand-rolled canvas-2D compositor + captureStream loop, which produced
+// flickery edges, halos and judder in recordings.
 //
-// Uses a setTimeout loop (NOT requestAnimationFrame) so the canvas keeps
-// updating while the recorder window is HIDDEN during capture
-// (backgroundThrottling:false keeps timers alive; rAF would pause).
+// Frames are driven by the camera track itself (not page timers), so the
+// pipeline keeps running while the recorder window is hidden during capture.
+//
+// Fail-safe: if the library is missing or errors, start() returns the raw
+// stream unprocessed so recording/preview never break.
 // ----------------------------------------------------------------------------
 
 class CamPipe {
   constructor() {
-    this.canvas = document.createElement('canvas')
-    this.ctx = this.canvas.getContext('2d')
-    // Offscreen accumulator that holds the TEMPORALLY-SMOOTHED mask. MediaPipe's
-    // per-frame mask jitters at the edges → visible flicker in the background.
-    // We blend each new mask into this accumulator (exponential moving average)
-    // so the silhouette is stable frame-to-frame, the same trick Google Meet uses.
-    this.maskCanvas = document.createElement('canvas')
-    this.maskCtx = this.maskCanvas.getContext('2d')
-    this.maskReady = false
-    this.video = document.createElement('video')
-    this.video.muted = true
-    this.video.playsInline = true
+    this.input = null
     this.blur = false
-    this.blurAmount = 0.5   // 0..1 background blur intensity (UI slider)
-    this.smoothing = 0.5    // EMA weight of the NEW mask (lower = steadier, more lag)
-    this.running = false
-    this.seg = null
-    this.segReady = false
-    this.timer = null
+    this.blurAmount = 0.5   // 0..1 intensity (UI slider): blur sigma, or bokeh of the virtual bg
+    this.bgImage = null     // data: URL of the virtual background image (null = blur mode)
+    this._bgTimer = null    // throttle for re-rendering the bokeh while dragging the slider
+    this._processed = null  // processed video track (owned by us)
     this._out = null
-    this.fps = 30
   }
 
-  async start(stream, { blur = false, blurAmount } = {}) {
+  _applyOptions() {
+    const vb = window.VirtualBackground
+    if (!vb || !vb.options) return
+    // The library's default asset paths are relative to the DOCUMENT (its demo
+    // ships index.html next to mediapipe/). Our pages live in src/ with the
+    // assets under src/vendor/vb/, so they must be absolute or segmentation
+    // fails with a bare error Event (silent 404 of the wasm loader).
+    const base = new URL('vendor/vb/', location.href).href
+    vb.options.wasmLoaderPath = base + 'mediapipe/tasks-vision/wasm/vision_wasm_internal.js'
+    vb.options.wasmBinaryPath = base + 'mediapipe/tasks-vision/wasm/vision_wasm_internal.wasm'
+    vb.options.modelPath = base + 'mediapipe/models/selfie_multiclass_256x256.tflite'
+    const amt = this.blur ? this.blurAmount : 0
+    if (this.bgImage) {
+      // VIRTUAL BACKGROUND mode. bgBlur must be 0: its shader branch returns
+      // early and would hide the background image. bgBlurRadius stays >0
+      // because borderSmooth reuses it as its kernel radius — a soft border
+      // blend between person and image is what sells the composite as real.
+      vb.options.enabled = this.blur
+      vb.options.bgBlur = 0
+      vb.options.bgBlurRadius = 10
+      vb.options.borderSmooth = 4
+    } else {
+      // BLUR mode. bgBlur = gaussian SIGMA in px (demo range 0-100) +
+      // bgBlurRadius = kernel extent in px. NOT `blur`, which is a whole-image
+      // filter — setting it with no backgroundUrl made the shader sample an
+      // empty background texture (the solid blue frame). A sub-1 sigma weights
+      // every non-center tap to ~zero → invisible blur, hence the px mapping.
+      // amt=0 must fully DISABLE the effect: with bgBlur=0 but enabled=true
+      // the shader falls through to virtual-background compositing and paints
+      // the empty background texture (solid blue).
+      vb.options.enabled = amt > 0
+      vb.options.borderSmooth = 0
+      vb.options.bgBlur = amt > 0 ? Math.round(6 + amt * 54) : 0
+      vb.options.bgBlurRadius = amt > 0 ? Math.round(16 + amt * 74) : 0
+      if (vb.options.backgroundUrl) vb.options.backgroundUrl = ''
+    }
+  }
+
+  // Set (or clear) the virtual background image. The slider becomes the
+  // BOKEH control: the image is pre-blurred on a canvas, which fakes camera
+  // depth-of-field — the single most effective realism trick, and it also
+  // hides small segmentation-edge imperfections.
+  async setBackground(dataUrl) {
+    this.bgImage = dataUrl || null
+    await this._refreshBackground()
+  }
+
+  async _refreshBackground() {
+    const vb = window.VirtualBackground
+    if (!vb || !vb.options) return
+    if (!this.bgImage) { this._applyOptions(); return }
+    let url = this.bgImage
+    const px = Math.round(this.blurAmount * 16)
+    if (px > 0) {
+      try { url = await this._bokeh(this.bgImage, px) } catch { /* use the sharp image */ }
+    }
+    this._applyOptions()
+    vb.options.backgroundUrl = url
+  }
+
+  async _bokeh(src, px) {
+    const img = new Image()
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = src })
+    const w = Math.min(img.naturalWidth || 1920, 1920)
+    const h = Math.round(w * (img.naturalHeight / img.naturalWidth)) || 1080
+    const c = document.createElement('canvas')
+    c.width = w
+    c.height = h
+    const x = c.getContext('2d')
+    // draw scaled up slightly so the blur doesn't bleed transparent borders in
+    const s = 1 + (px * 2) / Math.min(w, h)
+    x.filter = `blur(${px}px)`
+    x.drawImage(img, (w - w * s) / 2, (h - h * s) / 2, w * s, h * s)
+    return c.toDataURL('image/jpeg', 0.92)
+  }
+
+  async start(stream, { blur = false, blurAmount, background } = {}) {
     this.input = stream
-    this.blur = blur
+    this.blur = !!blur
     if (typeof blurAmount === 'number') this.blurAmount = Math.max(0, Math.min(1, blurAmount))
-    this.video.srcObject = stream
-    try { await this.video.play() } catch { /* autoplay */ }
-    this.canvas.width = this.video.videoWidth || 1280
-    this.canvas.height = this.video.videoHeight || 720
-    this.maskCanvas.width = this.canvas.width
-    this.maskCanvas.height = this.canvas.height
-    this.maskReady = false
-    if (blur) this._initSeg()
-    this.running = true
-    this._loop()
-    this._out = this.canvas.captureStream(this.fps)
-    const audio = stream.getAudioTracks()[0]
-    if (audio) this._out.addTrack(audio)
-    return this._out
-  }
-
-  _initSeg() {
-    if (this.seg || !window.SelfieSegmentation) return
+    this.bgImage = background || null
+    if (!this.blur || !window.VirtualBackground) {
+      this._out = stream
+      return stream
+    }
     try {
-      this.seg = new window.SelfieSegmentation({ locateFile: (f) => `vendor/mediapipe/${f}` })
-      // modelSelection 0 = general 256×256 model → finer mask than the 256×144 landscape one.
-      this.seg.setOptions({ modelSelection: 0, selfieMode: false })
-      this.seg.onResults((r) => this._composite(r))
-      this.segReady = true
-    } catch {
-      this.seg = null
-      this.segReady = false
+      await this._refreshBackground() // applies options; loads bg image if set
+      const videoTrack = stream.getVideoTracks()[0]
+      this._processed = await window.VirtualBackground.processVideoTrack(videoTrack)
+      const out = new MediaStream()
+      out.addTrack(this._processed)
+      const audio = stream.getAudioTracks()[0]
+      if (audio) out.addTrack(audio)
+      this._out = out
+      console.info('[campipe] blur activo: virtual-background (WebGL + multiclass)')
+      return out
+    } catch (e) {
+      try {
+        console.warn('[campipe] virtual-background falló, cámara sin blur:',
+          (e && (e.message || e.reason || e.type)) || String(e),
+          e && e.stack ? `\n${e.stack}` : '',
+          e && typeof e === 'object' ? JSON.stringify(e, Object.getOwnPropertyNames(e)).slice(0, 500) : '')
+      } catch { console.warn('[campipe] virtual-background falló (error no serializable)') }
+      this._processed = null
+      this._out = stream
+      return stream
     }
   }
 
   setBlur(on) {
     this.blur = !!on
-    this.maskReady = false  // reseed the smoothed mask when toggled
-    if (on) this._initSeg()
+    this._applyOptions()
   }
 
-  // 0..1 → background blur strength in px, scaled to the frame height so it
-  // looks the same at any resolution.
   setBlurAmount(v) {
     this.blurAmount = Math.max(0, Math.min(1, Number(v)))
-  }
-
-  _bgBlurPx() {
-    const h = this.canvas.height || 720
-    return Math.max(2, Math.round(h / 120 + this.blurAmount * (h / 22)))
-  }
-
-  async _loop() {
-    if (!this.running) return
-    try {
-      if (this.blur && this.segReady && this.seg && this.video.readyState >= 2) {
-        await this.seg.send({ image: this.video })
-      } else {
-        this._drawPlain()
-      }
-    } catch {
-      this._drawPlain()
-    }
-    if (this.running) this.timer = setTimeout(() => this._loop(), 1000 / this.fps)
-  }
-
-  _drawPlain() {
-    if (this.video.readyState >= 2) {
-      this.ctx.filter = 'none'
-      this.ctx.globalCompositeOperation = 'source-over'
-      this.ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height)
-    }
-  }
-
-  // Fold the new MediaPipe mask into the persistent accumulator as an
-  // exponential moving average on the ALPHA channel:
-  //   smoothed = (1 - a) * smoothed + a * current
-  // This is what removes the per-frame edge jitter (the "flicker").
-  _accumulateMask(maskImage) {
-    const m = this.maskCtx
-    const w = this.maskCanvas.width
-    const h = this.maskCanvas.height
-    if (!this.maskReady) {
-      // Seed the first frame fully so the person isn't transparent on startup.
-      m.globalCompositeOperation = 'source-over'
-      m.globalAlpha = 1
-      m.clearRect(0, 0, w, h)
-      m.drawImage(maskImage, 0, 0, w, h)
-      this.maskReady = true
+    if (this.bgImage) {
+      // re-render the bokeh, throttled so dragging the slider doesn't queue
+      // dozens of full-size canvas re-encodes
+      if (this._bgTimer) clearTimeout(this._bgTimer)
+      this._bgTimer = setTimeout(() => { this._bgTimer = null; this._refreshBackground() }, 180)
     } else {
-      const a = this.smoothing
-      // 1) decay the accumulated alpha by (1 - a): dst_a *= (1 - a)
-      m.globalCompositeOperation = 'destination-in'
-      m.globalAlpha = 1
-      m.fillStyle = `rgba(0,0,0,${1 - a})`
-      m.fillRect(0, 0, w, h)
-      // 2) add a * current mask:  dst_a += src_a * a
-      m.globalCompositeOperation = 'lighter'
-      m.globalAlpha = a
-      m.drawImage(maskImage, 0, 0, w, h)
+      this._applyOptions()
     }
-    m.globalAlpha = 1
-    m.globalCompositeOperation = 'source-over'
-  }
-
-  // Person sharp, background blurred — using the TEMPORALLY-SMOOTHED mask and
-  // FEATHERED edges so the cutout is stable and soft, not a hard/flickery line.
-  _composite(results) {
-    const { ctx, canvas } = this
-    const w = canvas.width
-    const h = canvas.height
-    const feather = Math.max(2, Math.round(h / 200)) // soft edge, scales with size
-    const bgBlur = this._bgBlurPx()
-
-    this._accumulateMask(results.segmentationMask)
-
-    ctx.save()
-    ctx.clearRect(0, 0, w, h)
-    ctx.globalCompositeOperation = 'source-over'
-    // Feather the SMOOTHED mask so the alpha edge is a soft gradient.
-    ctx.filter = `blur(${feather}px)`
-    ctx.drawImage(this.maskCanvas, 0, 0, w, h)
-    ctx.filter = 'none'
-    // Keep the person only where the (smoothed, softened) mask is opaque.
-    ctx.globalCompositeOperation = 'source-in'
-    ctx.drawImage(results.image, 0, 0, w, h)
-    // Blurred background behind, scaled up slightly so the blur doesn't darken
-    // the frame edges, and a touch desaturated for a natural look.
-    ctx.globalCompositeOperation = 'destination-over'
-    ctx.filter = `blur(${bgBlur}px) saturate(0.9) brightness(0.96)`
-    ctx.drawImage(results.image, -w * 0.04, -h * 0.04, w * 1.08, h * 1.08)
-    ctx.filter = 'none'
-    ctx.restore()
   }
 
   stop() {
-    this.running = false
-    if (this.timer) clearTimeout(this.timer)
-    this.timer = null
-    try { if (this.seg && this.seg.close) this.seg.close() } catch { /* ignore */ }
-    this.seg = null
-    this.segReady = false
-    if (this._out) for (const t of this._out.getVideoTracks()) t.stop()
+    if (this._bgTimer) { clearTimeout(this._bgTimer); this._bgTimer = null }
+    if (this._processed) {
+      try { this._processed.stop() } catch { /* ignore */ }
+      this._processed = null
+    }
     this._out = null
+    this.input = null
   }
 
   get outputStream() { return this._out }
