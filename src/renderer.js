@@ -193,8 +193,8 @@ async function renderRecClips() {
     const card = document.createElement('div'); card.className = 'rec-clip'
     const thumb = c.thumbDataUrl ? `style="background-image:url('${c.thumbDataUrl}')"` : ''
     card.innerHTML = `
-      <div class="rc-thumb" ${thumb}><button class="rc-play" title="reproducir">${icon('play', 'icon icon-sm')}</button></div>
-      <div class="rc-row"><span>Clip ${i + 1} · ${fmtDur(c.durationMs)}</span><button class="rc-del danger" title="borrar">${icon('trash', 'icon icon-sm')}</button></div>`
+      <div class="rc-thumb" ${thumb}><button class="rc-play" title="reproducir">${icon('play', 'icon icon-sm')}</button><span class="dur-chip">${fmtDur(c.durationMs)}</span></div>
+      <div class="rc-row"><span>Clip ${i + 1}</span><button class="rc-del danger" title="borrar">${icon('trash', 'icon icon-sm')}</button></div>`
     card.querySelector('.rc-play').addEventListener('click', () => openVideo(`rsmedia://media/${encodeURIComponent(c.webcamPath)}`))
     card.querySelector('.rc-del').addEventListener('click', async () => {
       const ok = await openConfirm('Borrar clip', `¿Borrar el Clip ${i + 1}? Se moverá a la papelera.`)
@@ -403,15 +403,25 @@ function renderGallery() {
     const card = document.createElement('div')
     card.className = 'project-card'
     const posterStyle = p.previewDataUrl ? `style="background-image:url('${p.previewDataUrl}')"` : ''
+    const isFinal = p.hasFinal || p.hasFinal9x16
+    const badgeTxt = isFinal ? (p.hasFinal && p.hasFinal9x16 ? 'final ✓ +9:16' : 'final ✓') : 'borrador'
+    const durChip = p.durationMs ? `<span class="dur-chip">${fmtDur(p.durationMs)}</span>` : ''
     card.innerHTML = `
-      <div class="poster" ${posterStyle}>${p.previewDataUrl ? '' : 'sin preview'}</div>
-      <span class="badge ${p.hasFinal ? 'final' : 'draft'}">${p.hasFinal ? 'final ✓' : 'borrador'}</span>
+      <div class="poster" ${posterStyle}>${p.previewDataUrl ? '' : 'sin preview'}${durChip}</div>
+      <span class="badge ${isFinal ? 'final' : 'draft'}">${badgeTxt}</span>
       <div class="info">
         <div class="pname">${escapeHtml(p.name)}</div>
         <div class="meta">${p.clipCount} clip(s) · ${fmtDur(p.durationMs)} · ${fmtDate(p.created)}</div>
       </div>`
     card.addEventListener('click', () => openProject(p.dir))
     grid.appendChild(card)
+    // flip the badge to "montando…" if this project's agent is running (async, best-effort)
+    window.studio.agentStatus(p.dir).then((job) => {
+      if (job && job.status === 'running') {
+        const b = card.querySelector('.badge')
+        if (b) { b.className = 'badge busy'; b.textContent = 'montando…' }
+      }
+    }).catch(() => {})
   }
 }
 async function createProject() {
@@ -433,8 +443,9 @@ async function createProject() {
 
 function renderDetail(d) {
   el('detailName').textContent = d.name
-  el('detailBadge').textContent = d.hasFinal ? 'final ✓' : 'borrador'
-  el('detailBadge').className = 'badge ' + (d.hasFinal ? 'final' : 'draft')
+  const isFinal = d.hasFinal || d.hasFinal9x16
+  el('detailBadge').textContent = isFinal ? (d.hasFinal && d.hasFinal9x16 ? 'final ✓ +9:16' : 'final ✓') : 'borrador'
+  el('detailBadge').className = 'badge ' + (isFinal ? 'final' : 'draft')
 
   // compose options
   const o = d.composeOpts || {}
@@ -454,19 +465,9 @@ function renderDetail(d) {
   el('optsPanel').classList.add('hidden'); el('toggleOpts').textContent = '▸ Opciones'
   el('composeStatus').textContent = ''
 
-  // final result
-  const finalArea = el('finalArea')
-  if (d.hasFinal) {
-    const src = `rsmedia://media/${encodeURIComponent(d.finalPath)}`
-    finalArea.innerHTML = `
-      <video class="final-video" controls playsinline ${d.previewDataUrl ? `poster="${d.previewDataUrl}"` : ''} src="${src}"></video>
-      <div class="final-actions"><button id="openFinal" class="ghost">${icon('external')} Abrir en reproductor</button></div>`
-    finalArea.querySelector('#openFinal').addEventListener('click', () => window.studio.openPath(d.finalPath))
-    el('iterateBlock').classList.remove('hidden')
-  } else {
-    finalArea.innerHTML = '<div class="empty">Aún no hay edición final. Pulsa <b>✨ Componer vídeo</b>: Claude Code editará la grabación con la skill <code>video-use</code> (transcripción Whisper local, planos por contenido). Puede tardar varios minutos.</div>'
-    el('iterateBlock').classList.add('hidden')
-  }
+  // final result (ambos aspectos)
+  renderResult(d)
+  el('iterateBlock').classList.toggle('hidden', !isFinal)
 
   // clips
   el('clipsTitle').textContent = `Clips (${d.clips.length})`
@@ -479,9 +480,9 @@ function renderDetail(d) {
       card.className = 'clip-card'
       const thumbStyle = c.thumbDataUrl ? `style="background-image:url('${c.thumbDataUrl}')"` : ''
       card.innerHTML = `
-        <div class="clip-thumb" ${thumbStyle}><button class="clip-play" title="reproducir">${icon('play', 'icon icon-sm')}</button></div>
+        <div class="clip-thumb" ${thumbStyle}><button class="clip-play" title="reproducir">${icon('play', 'icon icon-sm')}</button><span class="dur-chip">${fmtDur(c.durationMs)}</span></div>
         <div class="clip-row">
-          <span class="clip-meta">Clip ${i + 1} · ${fmtDur(c.durationMs)}</span>
+          <span class="clip-meta">Clip ${i + 1}</span>
           <span class="clip-btns">
             <button data-a="up" title="subir" ${i === 0 ? 'disabled' : ''}>${icon('chevron-up', 'icon icon-sm')}</button>
             <button data-a="down" title="bajar" ${i === d.clips.length - 1 ? 'disabled' : ''}>${icon('chevron-down', 'icon icon-sm')}</button>
@@ -495,6 +496,41 @@ function renderDetail(d) {
       grid.appendChild(card)
     })
   }
+}
+
+// Área de resultado: muestra los dos aspectos (16:9 YouTube y 9:16 Shorts/Reels).
+function renderResult(d) {
+  const finalArea = el('finalArea')
+  const isFinal = d.hasFinal || d.hasFinal9x16
+  if (!isFinal) {
+    finalArea.className = 'final-area'
+    finalArea.innerHTML = '<div class="empty">Aún no hay vídeo final. Graba algún clip y pulsa <b>Componer vídeo</b>: Claude Code editará la grabación con la skill <code>video-use</code>. Puede tardar varios minutos.</div>'
+    return
+  }
+  finalArea.className = 'result-grid'
+  const fig = (kind, has, filePath, poster) => {
+    const label = kind === '169' ? `${icon('screen', 'icon icon-sm')} YouTube 16:9` : `${icon('window', 'icon icon-sm')} Shorts/Reels 9:16`
+    if (!has) {
+      return `<figure class="result r${kind}"><figcaption>${label}</figcaption><div class="empty">No pedido en este montaje.</div></figure>`
+    }
+    const src = `rsmedia://media/${encodeURIComponent(filePath)}`
+    return `
+      <figure class="result r${kind}">
+        <figcaption>${label}
+          <button class="ghost mini" data-open="${kind}" title="Abrir en reproductor">${icon('external', 'icon icon-sm')}</button>
+          <button class="ghost mini" data-reveal="${kind}" title="Mostrar en Finder">${icon('folder', 'icon icon-sm')}</button>
+        </figcaption>
+        <video controls playsinline preload="metadata" ${poster ? `poster="${poster}"` : ''} src="${src}"></video>
+      </figure>`
+  }
+  finalArea.innerHTML =
+    fig('169', d.hasFinal, d.finalPath, d.previewDataUrl) +
+    fig('916', d.hasFinal9x16, d.final9x16Path, d.preview9x16DataUrl)
+  const paths = { 169: d.finalPath, 916: d.final9x16Path }
+  finalArea.querySelectorAll('[data-open]').forEach((b) =>
+    b.addEventListener('click', () => window.studio.openPath(paths[b.dataset.open])))
+  finalArea.querySelectorAll('[data-reveal]').forEach((b) =>
+    b.addEventListener('click', () => window.studio.revealPath(paths[b.dataset.reveal])))
 }
 
 function currentOpts() {

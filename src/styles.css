@@ -535,7 +535,7 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.15); }
 .project-card .info { padding: 10px 12px 12px; }
 .project-card .pname { font-weight: 600; margin-bottom: 4px; }
 .project-card .meta { font-size: var(--fs-xs); color: var(--text-2); }
-.poster .dur-chip {
+.poster .dur-chip, .clip-thumb .dur-chip, .rc-thumb .dur-chip {
   position: absolute; right: 6px; bottom: 6px;
   background: var(--scrim-heavy); color: var(--text-1);
   font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: var(--r-sm);
