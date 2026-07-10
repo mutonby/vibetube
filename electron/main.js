@@ -357,7 +357,21 @@ function optsLines(opts) {
     '  cam PiP, and captions ride high above the Shorts/Reels UI — you just set the EDL "output" to',
     '  each size and render twice. Render any HyperFrames graphic at BOTH output sizes so the cut-in',
     '  segment matches each canvas.',
-    `- Subtitles: ${o.subtitles ? 'YES — burn word-level subtitles (last in the chain).' : 'NO subtitles.'}`,
+    o.subtitles ? [
+      '- SUBTITLES — DIFFERENT PER FORMAT (user preference, important):',
+      '  * 16:9 `final.mp4` (YouTube): DO NOT burn subtitles into the picture. Render it with',
+      '    `helpers/render.py … --subs-mode sidecar` so a `final.srt` is written NEXT TO the mp4 (a file,',
+      '    not baked-in text). That is all YouTube needs.',
+      '  * 9:16 `final_9x16.mp4` (Shorts/Reels/TikTok): BURN Hormozi-style captions (big UPPERCASE words,',
+      '    the ACTIVE word highlighted in an accent color, animated pop). Place them HIGH (~55-60% down the',
+      '    frame) so they sit ABOVE the bottom-center PiP camera, never over the mouth. Build them as a',
+      '    TRANSPARENT HyperFrames overlay synced to the Whisper WORD timestamps (start from a `caption-*`',
+      '    registry example; scale word times to the real clip duration), render it to a transparent',
+      '    WebM/MOV, add it to the EDL `overlays` for the VERTICAL render only, and render that canvas with',
+      '    `--subs-mode off` (the captions come from the overlay, so ffmpeg must not also burn an SRT).',
+      '    (This machine\'s ffmpeg has no libass, so the `subtitles` filter is unavailable — the HyperFrames',
+      '    overlay is how you burn captions here; do NOT rely on `--subs-mode burn`.)',
+    ].join('\n') : '- SUBTITLES: OFF for both formats — render with `--subs-mode off` and add no caption overlay.',
     `- Transcription: run \`helpers/transcribe_whisper.py --model ${o.model}\` on each clip's webcam.webm. Do NOT use ElevenLabs.`,
     `- Default PiP corner: ${o.pip}.`,
     o.cropMenubar ? [
@@ -370,18 +384,25 @@ function optsLines(opts) {
       '  actual content, decrease it. Iterate until the bar is gone and the content is intact.',
     ].join('\n') : null,
     o.sfx ? [
-      '- Add timed SOUND EFFECTS (SFX) like a real editor: pick a handful of moments — a whoosh on each',
-      '  shot change, a pop/ding when a HyperFrames overlay or a key word appears, a riser into a reveal —',
-      '  and find the BEST-FITTING EXISTING sound for each from the HeyGen sounds library (do NOT generate;',
-      '  these are professionally made). For each moment, query the library with a specific natural-language',
-      '  description and choose the top-scoring result that matches the vibe/energy:',
-      '    `GET https://api.heygen.com/v3/audio/sounds?type=sound_effects&query=<e.g. "punchy whoosh transition">`',
-      '    with header `x-api-key: <HEYGEN_API_KEY>` — read the key (and HEYGEN_API_BASE) from the video-use',
-      '    repo `.env`. Download the returned pre-signed WAV (short-lived) into edit/sfx/.',
-      '  Then add an `sfx` array to the EDL: each {file, at (output-timeline seconds), gain_db (negative, so',
-      '  it sits UNDER the voice)}. In the self-eval, confirm each SFX hits ON its exact moment and adjust',
-      '  `at` if it is early/late. Subtle and well-timed beats loud and constant.',
-      '  (Only if HeyGen is unavailable, fall back to ElevenLabs `POST /v1/sound-generation`.)',
+      '- SOUND from the HeyGen library — FRESH per video, timed to the WORDS (like avatar-muton):',
+      '  * The key is already in your ENVIRONMENT: `HEYGEN_API_KEY` (+ optional `HEYGEN_API_BASE`, default',
+      '    https://api.heygen.com). Do NOT look for it in a .env; read it from the env. Query the library with',
+      '    a SPECIFIC natural-language description and take the top-scoring match:',
+      '      `GET $HEYGEN_API_BASE/v3/audio/sounds?type=sound_effects&query=<e.g. "punchy whoosh transition">`',
+      '      header `x-api-key: $HEYGEN_API_KEY`. Download the pre-signed WAV into edit/sfx/.',
+      '  * PICK NEW, DIFFERENT sounds for THIS video (do not recycle the same handful every time) — search',
+      '    fresh queries that fit THIS content. Do NOT generate; these are professionally made.',
+      '  * PLACE THEM ON THE WORD: use the Whisper word timestamps to fire each SFX exactly when the trigger',
+      '    word is spoken (whoosh ON each shot change/transition, a pop/ding when a graphic element or key word',
+      '    lands, a riser INTO a reveal, "cash/coins" when money is said, a chime on a notification). Add an',
+      '    `sfx` array to the EDL: each {file, at (output-timeline seconds), gain_db (negative, sits UNDER the',
+      '    voice, ~-10..-16)}. A FEW well-placed beats loud and constant.',
+      '  * BACKGROUND MUSIC — decide PER VIDEO: if the piece wants energy (promo/story/hook), search',
+      '    `type=music` for a fitting track, download to edit/music/, and set the EDL top-level',
+      '    `music: {"file": "music/<name>.wav", "volume_db": -22}` (render.py ducks it under your voice',
+      '    automatically). For tutorials/demos where music would fight the explanation, use SFX ONLY (no music).',
+      '  * In the self-eval, confirm each SFX hits ON its word and adjust `at` if early/late.',
+      '  (Only if HeyGen is unreachable, fall back to ElevenLabs `POST /v1/sound-generation` for SFX.)',
     ].join('\n') : null,
     o.tone && o.tone.trim() ? `- Editing direction from the user: ${o.tone.trim()}` : null,
   ].filter(Boolean)
@@ -394,9 +415,21 @@ function composePrompt(opts) {
     '',
     'This is a record-studio project. Clips live in `clips/clip_NN/` and each clip has two',
     'SYNCHRONIZED tracks on one timeline: `screen.webm` (no audio) and `webcam.webm` (carries',
-    'the mic — the only audio). `sync.json` has `offset_ms`. Use the skill\'s MULTICAM mode:',
-    'choose `fullcam` / `fullscreen` / `pip` per moment from the transcript (cut to the camera',
-    'when talking to the viewer, to the screen when demoing, pip when narrating over it).',
+    'the mic — the only audio). `sync.json` has `offset_ms`. Use the skill\'s MULTICAM mode.',
+    '',
+    'MONTAGE STYLE — smooth & alive, NOT choppy (copy avatar-muton, which the user loves):',
+    '  - The user DISLIKES hard "multicam" framing cuts. Favor CONTINUITY: keep the camera in a PiP over',
+    '    the screen while demoing (both visible), and reserve full shots for real beats. Use `fullcam` only',
+    '    when talking straight to the viewer (hook/CTA), `fullscreen` for a pure screen moment.',
+    '  - NEVER let a shot sit static: a slow PUNCH-IN ZOOM is ON by default (render.py) on fullcam,',
+    '    fullscreen AND the PiP camera — the camera is always gently moving. You may set a range\'s',
+    '    `"zoom":[1.0,1.06]` (or `"pip":{"zoom":[1.0,1.05]}`) to punch harder on an emphasis beat.',
+    '  - TRANSITIONS ARE CROSSFADES, not jump cuts: every range may carry `"transition":"fade"` (also',
+    '    "dissolve"/"slide") and `"transition_after_sec":0.4`. Use a hard `"transition":"cut"` ONLY at a',
+    '    genuine block change. Put a whoosh SFX on the bigger transitions (see SFX).',
+    '  - VARY THE CAMERA across the video, and use a DIFFERENT pattern each video: change the PiP',
+    '    `"pip":{"corner": …}` among `br/bl/tr/tl/bc/tc/cl/cr` and its `"scale"` (small ~0.24 up to a big',
+    '    ~0.5 "side" look) so it is not always the same corner. Do not repeat the previous video\'s plan.',
     '',
     'OPTIONS:',
     ...optsLines(opts),
@@ -408,24 +441,30 @@ function composePrompt(opts) {
     '     per canvas (output 1920x1080 → final.mp4, output 1080x1920 → final_9x16.mp4)',
     '  4. ADD GRAPHICS with HyperFrames, generously, using the `graphic` LAYOUT (see rules below).',
     '',
-    'GRAPHICS — make it dynamic, like a pro YouTuber edit:',
+    'GRAPHICS — dynamic like a pro edit, but SYNCED TO THE SCRIPT (this is what was wrong before):',
     '  - Use the PREDEFINED HyperFrames examples and pick the GOOD-LOOKING ones — do NOT default to',
     '    `blank`. List them with `hyperframes init --example <name>` (registry has warm-grain, swiss-grid,',
     '    kinetic-type, product-promo, logo-outro, caption-*, lt-* lower-thirds, transitions-*, vfx-*,',
     '    code-snippet-*, app-showcase, …). Choose the example that fits each beat, then fill its text from',
     '    the transcript.',
     '  - PUT THE FIRST GRAPHIC within the first ~5 SECONDS of the video (a hook/title card).',
-    '  - KEEP THE PICTURE CHANGING every few seconds — alternate graphic / fullscreen / fullcam / pip beat',
-    '    by beat following what is being said. Never let one shot sit static for long.',
+    '  - A GRAPHIC COVERS ITS WHOLE NARRATION — this is the key fix. Its EDL range [start,end] must span the',
+    '    ENTIRE sentence/idea it illustrates (start ~0.4s before the payoff word, end after the sentence',
+    '    finishes), NEVER a 1-2s flash. Change graphic when the CONTENT changes (a new point), not on a fixed',
+    '    every-few-seconds timer.',
+    '  - SYNC THE ANIMATION TO THE VOICE: get the clip\'s Whisper word timestamps; each element inside the',
+    '    graphic (bullet, number, chip, badge) should ANIMATE IN exactly when its word is spoken. Scale TTS/',
+    '    transcript times to the real clip duration. A count-up/reveal should LAND on the spoken payoff word',
+    '    (start it `reveal_duration` earlier). A graphic that ignores the word timing feels disconnected.',
     '  - Insert each graphic as an EDL range with {"layout":"graphic","graphic_file":"animations/slot_N/render.mp4"}.',
-    '    render.py shows it FULL-FRAME as a hard cut-in BUT keeps YOUR VOICE (the webcam mic) playing under',
-    '    it for that window. NEVER render a graphic as a standalone/silent clip and NEVER leave silence —',
-    '    the voice must always be heard. Do NOT overlay graphics on top of the demo.',
-    '  - Each graphic must last long enough to READ it: at least ~3-4s, and at least (its narration +1s);',
-    '    hold the final frame ~1s before cutting back.',
-    '  - Render every HyperFrames graphic at BOTH output sizes (16:9 and 9:16) so the cut-in matches each canvas.',
+    '    render.py shows it FULL-FRAME BUT keeps YOUR VOICE (the webcam mic) playing under it, and now',
+    '    CROSSFADES in/out (softer than the old hard cut-in). NEVER a silent/standalone clip — the voice must',
+    '    always be heard. Do NOT overlay graphics on top of the live demo.',
+    '  - Minimum readable: at least ~3-4s AND at least (its narration +1s); hold the final frame ~1s.',
+    '  - Render every HyperFrames graphic at BOTH output sizes (16:9 and 9:16) so the segment matches each canvas.',
     '',
-    'Subtitles sit lower automatically on horizontal video so they do not cover the face — keep them there.',
+    'Subtitles follow the per-format policy in OPTIONS: the 16:9 gets a `.srt` sidecar (NOT burned), the',
+    '9:16 gets BURNED Hormozi captions via a HyperFrames overlay (high, above the PiP camera).',
     '',
     'Because this is headless, DO NOT ask for confirmation and DO NOT stop to discuss strategy —',
     'pick sensible defaults and proceed. Keep going until BOTH `edit/final.mp4` and',
@@ -445,8 +484,10 @@ function iteratePrompt(feedback, opts) {
     'OPTIONS still apply:',
     ...optsLines(opts),
     '',
-    'Keep it multicam (fullcam/fullscreen/pip from the transcript). Re-render BOTH `edit/final.mp4`',
-    '(16:9) and `edit/final_9x16.mp4` (9:16).',
+    'Keep the SMOOTH montage style: PiP base with a slow punch-in zoom, CROSSFADES between shots (not',
+    'hard cuts — the user dislikes framing cuts), varied PiP position/size, graphics that span their whole',
+    'narration with elements synced to the spoken words, and fresh HeyGen SFX/music timed to the words.',
+    'Re-render BOTH `edit/final.mp4` (16:9) and `edit/final_9x16.mp4` (9:16).',
     'Do NOT ask for confirmation. Keep going until both updated finals exist.',
   ].join('\n')
 }
@@ -589,6 +630,23 @@ function pushLog(key, msg) {
   broadcast('agent-progress', { key, msg })
 }
 
+// The HeyGen API key/base live in avatar-muton's `.env` (canonical, per CLAUDE.md).
+// Inject them into the headless agent's environment so it can pull NEW sound
+// effects / music from the HeyGen library per video (REST). Never logged/printed.
+// Returns {} if the file or keys are missing (agent then falls back to ElevenLabs).
+function heygenEnv() {
+  try {
+    const envPath = path.join(process.env.HOME || '', 'Documents', 'avatar-muton', '.env')
+    const txt = fs.readFileSync(envPath, 'utf8')
+    const out = {}
+    for (const line of txt.split(/\r?\n/)) {
+      const m = /^\s*(HEYGEN_API_KEY|HEYGEN_API_BASE)\s*=\s*(.*)$/.exec(line)
+      if (m) out[m[1]] = m[2].trim().replace(/^["']|["']$/g, '')
+    }
+    return out
+  } catch { return {} }
+}
+
 // Run a headless `claude -p` agent. successCheck() returns a result object on
 // success, or null on failure. Generic over compose/iterate and scripts.
 function runAgentJob(key, cwd, prompt, successCheck, startMsg, extra = {}) {
@@ -619,7 +677,7 @@ function runAgentJob(key, cwd, prompt, successCheck, startMsg, extra = {}) {
   }
   let child
   try {
-    child = spawn(claude, args, { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] })
+    child = spawn(claude, args, { cwd, env: { ...process.env, ...heygenEnv() }, stdio: ['ignore', 'pipe', 'pipe'] })
   } catch (err) {
     job.status = 'error'; job.error = err.message
     pushLog(key, 'Error: ' + err.message)

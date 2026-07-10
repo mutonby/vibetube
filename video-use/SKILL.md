@@ -178,6 +178,23 @@ Hard rules: apply **per-segment during extraction** (not post-concat, which re-e
 
 ## Subtitles (when requested)
 
+**Delivery mode — `render.py --subs-mode {burn|sidecar|off}`:**
+- `burn` — captions baked into the picture via the ffmpeg `subtitles` filter (needs libass).
+- `sidecar` — build `master.srt` and drop it NEXT TO the output (`<output>.srt`), NOT burned.
+- `off` — nothing. (Legacy `--build-subtitles` = burn, `--no-subtitles` = off; `--subs-mode` overrides.)
+If `burn` is asked but this ffmpeg lacks the `subtitles` filter (no libass), render.py degrades to a
+sidecar `.srt` rather than crashing.
+
+**record-studio per-format policy (the user's preference):**
+- **16:9 `final.mp4` (YouTube): NEVER burn.** Render with `--subs-mode sidecar` → `final.srt` beside the
+  mp4. The user does NOT want baked-in captions on long-form.
+- **9:16 `final_9x16.mp4` (Shorts/Reels/TikTok): BURN Hormozi captions.** This box has no libass, so burn
+  them as a **transparent HyperFrames caption overlay** (not the ffmpeg `subtitles` filter): start from a
+  `caption-*` registry example, sync each word to the Whisper WORD timestamps (scale to the real clip
+  duration), place them HIGH (~55–60% down) so they sit ABOVE the bottom-center PiP camera, render to a
+  transparent WebM/MOV, add it to the EDL `overlays` for the vertical canvas, and render that canvas with
+  `--subs-mode off`. (Same technique avatar-muton uses on this machine.)
+
 Subtitles have three dimensions worth reasoning about: **chunking** (1/2/3/sentence per line), **case** (UPPER/Title/Natural), and **placement** (margin from bottom). The right combo depends on content.
 
 **Worked styles** — pick, adapt, or invent:
@@ -332,7 +349,8 @@ Multicam EDL:
 ```
 
 `sync.offset_ms` = `cam_start - screen_start` (from `sync.json`); `render.py`
-aligns the screen track by that amount. `pip.corner` ∈ `br|bl|tr|tl`,
+aligns the screen track by that amount. `pip.corner` ∈
+`br|bl|tr|tl|bc|tc|cl|cr|c` (corners + bottom/top-center, left/right-center, center),
 `pip.scale` is the inset width as a fraction of the canvas, `pip.margin` is the
 edge padding in px. Set a top-level `screen_crop` like `{"top": 0.04}` to crop a strip off the TOP of the
 screen track before scaling (fraction of height, 0–0.2) — use it to remove the macOS
@@ -342,8 +360,22 @@ vertical/shorts. For a project with multiple recorded clips, lay the clips end
 to end on the timeline (one EDL per clip rendered then concatenated, or shift
 each clip's ranges by the running offset). `render.py` auto-detects multicam
 from `multicam: true` or any range having a `layout`. Everything else
-(per-segment extract → lossless concat → overlays → subtitles LAST → loudnorm)
+(per-segment extract → concat → overlays → subtitles LAST → loudnorm)
 is unchanged.
+
+**Montage continuity — SMOOTH, not choppy (record-studio; the user dislikes hard framing cuts).**
+Copy avatar-muton's feel: keep the camera in a `pip` over the screen while demoing (both visible), and
+reserve full shots for real beats. Three engine features (all in `render.py`) make it flow:
+- **Punch-in zoom is ON by default** on `fullcam`, `fullscreen` AND the `pip` camera inset — no shot is
+  ever static. Override per range with `"zoom": [1.0, 1.06]` (fullcam/fullscreen) or
+  `"pip": {"zoom": [1.0, 1.05]}` for the inset. Disable globally with `--no-punch`.
+- **Crossfades between segments** (not jump cuts). Per range: `"transition"` ∈
+  `fade|slide|dissolve|wipe|cut` (default `fade`) and `"transition_after_sec"` (default `0.4`), read off
+  the LEFT range of each boundary. Use `"cut"` (≈2 frames) ONLY at a genuine block change. Subtitles,
+  overlays and SFX stay locked to the picture — `render.py` remaps their times for the overlap. Disable
+  with `--no-xfade` (falls back to lossless hard concat).
+- **Vary the camera** across the video and per video: change `pip.corner` and `pip.scale` (small ~0.24 →
+  a big ~0.5 "side" look) so it's never the same corner; don't repeat the previous video's pattern.
 
 **Deliver BOTH aspects by default (record-studio).** A record-studio video should ship in
 1920×1080 (`final.mp4`, YouTube) AND 1080×1920 (`final_9x16.mp4`, Shorts/Reels/TikTok) — same edit,
@@ -358,8 +390,8 @@ same EDL vertical without editing it.)
 
 **Graphics in a multicam edit — use the `graphic` layout (NEVER a silent clip):** add a range with
 `{"layout": "graphic", "graphic_file": "animations/slot_N/render.mp4"}`. render.py shows the card
-full-frame as a hard cut-in BUT keeps the **continuous webcam voice** under it for that `[start,end]`
-window — so the voice never goes silent, only the picture cuts to the graphic and back. Do NOT render a
+full-frame (crossfaded in/out) BUT keeps the **continuous webcam voice** under it for that `[start,end]`
+window — so the voice never goes silent, only the picture switches to the graphic and back. Do NOT render a
 graphic as a standalone clip and concat it (that segment would be silent) and do NOT float it as an
 `overlays`-on-top composite (looks off over a shared-screen demo). Reserve `overlays` for things meant
 to truly sit on top (lower-thirds, captions). In portrait the card is blurred-filled to the canvas.
@@ -371,10 +403,15 @@ to truly sit on top (lower-thirds, captions). In portrait the card is blurred-fi
   `transitions-*`, `vfx-*`, `code-snippet-*`, `app-showcase`, …). Pick the example that fits the beat,
   then fill its text from the transcript.
 - **First graphic within the first ~5s** of the video (hook title card).
-- **Keep the picture changing every few seconds** — alternate `graphic` / `fullscreen` / `fullcam` /
-  `pip` per beat following what's being said. Never let one shot sit static for too long.
-- **Each graphic lasts long enough to read it**: ≥ ~3–4s, and ≥ (its narration length + 1s); hold the
-  final frame ≥1s before cutting back. The voice keeps playing under it the whole time.
+- **A graphic COVERS ITS WHOLE NARRATION** (the fix for "graphics that flash by"): its `[start,end]`
+  spans the ENTIRE sentence/idea it illustrates (start ~0.4s before the payoff word, end after the
+  sentence finishes) — never a 1–2s flash. Change graphic when the CONTENT changes (a new point), not on
+  a fixed every-few-seconds timer.
+- **Sync the animation to the voice**: pull the clip's Whisper word timestamps and animate each element
+  in (bullet, number, chip, badge) exactly when its word is spoken; scale transcript times to the real
+  clip duration; a count-up/reveal LANDS on the spoken payoff word (start it `reveal_duration` earlier).
+- **Each graphic still reads**: ≥ ~3–4s and ≥ (its narration + 1s); hold the final frame ≥1s. The voice
+  plays under it, and `render.py` now crossfades it in/out (softer than the old hard cut-in).
 
 **Subtitle position:** `render.py` lowers the caption margin automatically on horizontal (16:9) output
 so captions don't cover the speaker's mouth, while keeping the high safe-zone margin on vertical
@@ -382,36 +419,41 @@ so captions don't cover the speaker's mouth, while keeping the high safe-zone ma
 
 ## Sound effects (SFX) — when requested
 
-Timed SFX make an edit feel pro: a whoosh on a shot change, a pop/ding when a HyperFrames
-overlay or a key word appears, a riser into a reveal, a subtle click on a cut.
+Timed SFX make an edit feel pro: a whoosh on a shot change/crossfade, a pop/ding when a graphic element
+or a key word lands, a riser into a reveal, "cash/coins" when money is said, a chime on a notification.
 
-Pick the moments from what you ALREADY know: overlay `start_in_output` times, shot-change
-boundaries (segment cuts), and emphasis/payoff words from the transcript. A few well-placed SFX
-beat a constant stream — keep it tasteful and synced to the frame; SFX sit UNDER the voice.
+**Place SFX ON THE WORD.** Pick moments from the transcript's Whisper WORD timestamps (not vibes):
+fire each SFX exactly when its trigger word is spoken, plus one on each shot-change/crossfade. A few
+well-placed beats a constant stream; SFX sit UNDER the voice (`gain_db` ~ -10..-16).
 
-Source the audio (read API keys from this repo's `.env`; download WAVs into `edit/sfx/`):
-- **HeyGen sounds library (preferred — real, professionally-made sounds).** Search it like an editor:
-  for each moment write a specific query and take the best-scoring match.
+**Fetch FRESH sounds per video** (`edit/sfx/`) — don't recycle the same handful every time:
+- **HeyGen sounds library (preferred — real, professionally-made sounds).** For each moment write a
+  SPECIFIC query and take the best-scoring match.
   `GET ${HEYGEN_API_BASE:-https://api.heygen.com}/v3/audio/sounds?type=sound_effects&query=<e.g. "punchy whoosh transition">`
-  with header `x-api-key: $HEYGEN_API_KEY` (both vars are in `.env`). Download the returned pre-signed
-  WAV URL (short-lived) into `edit/sfx/`. Do NOT generate sounds when HeyGen is available.
+  with header `x-api-key: $HEYGEN_API_KEY`. In record-studio these vars are in the ENVIRONMENT (injected
+  by the app); elsewhere read them from `.env`. Download the pre-signed WAV (short-lived) into
+  `edit/sfx/`. Do NOT generate sounds when HeyGen is available.
 - **ElevenLabs text-to-SFX** (fallback only) — `POST https://api.elevenlabs.io/v1/sound-generation`,
   header `xi-api-key: $ELEVENLABS_API_KEY`, JSON `{"text": "<describe>", "duration_seconds": 0.5-3}`.
-- A local SFX pack if the user has one.
 
 Then add an `sfx` array to the EDL — `render.py` mixes each one in at its exact time:
 
 ```json
 "sfx": [
-  {"file": "sfx/whoosh.wav", "at": 5.63, "gain_db": -6},
-  {"file": "sfx/pop.wav",    "at": 6.10, "gain_db": -9}
+  {"file": "sfx/whoosh.wav", "at": 5.63, "gain_db": -12},
+  {"file": "sfx/pop.wav",    "at": 6.10, "gain_db": -14}
 ]
 ```
 
 `at` is the OUTPUT-timeline time in seconds (same clock as overlays' `start_in_output`). `gain_db`
 trims level (negative = quieter). render.py delays each SFX to land on the frame, amix'es it over the
-voice with a limiter (no clipping), then loudnorm runs as usual. In the self-eval pass, check each
-SFX hits ON its moment and adjust `at` if it's early/late.
+voice with a limiter, then loudnorm runs. In the self-eval pass, check each SFX hits ON its word.
+
+**Background music — decide PER VIDEO.** For energetic pieces (promo/story/hook), search
+`type=music` (same endpoint), download to `edit/music/`, and set the EDL top-level
+`"music": {"file": "music/<name>.wav", "volume_db": -22}` — `render.py` loops it and **ducks it under
+your voice** (sidechaincompress) automatically. For tutorials/demos where music fights the explanation,
+use SFX ONLY (omit `music`).
 
 ## Memory — `project.md`
 
