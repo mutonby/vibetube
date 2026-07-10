@@ -400,9 +400,17 @@ function summarizeProject(dir) {
   const durationMs = clips.reduce((a, c) => a + (c.duration_ms || 0), 0)
   const finalPath = path.join(dir, 'edit', 'final.mp4')
   const hasFinal = fs.existsSync(finalPath)
+  const final9x16Path = path.join(dir, 'edit', 'final_9x16.mp4')
+  const hasFinal9x16 = fs.existsSync(final9x16Path)
   let previewDataUrl = null
+  let preview9x16DataUrl = null
+  if (hasFinal9x16) {
+    preview9x16DataUrl = frameDataUrl(final9x16Path, path.join(dir, 'edit', '_poster_9x16.jpg'), 1)
+  }
   if (hasFinal) {
     previewDataUrl = frameDataUrl(finalPath, path.join(dir, 'edit', '_poster.jpg'), 1)
+  } else if (hasFinal9x16) {
+    previewDataUrl = preview9x16DataUrl
   } else if (clips.length) {
     const c0 = clips[0]
     previewDataUrl = frameDataUrl(path.join(dir, c0.webcam || `clips/${c0.id}/webcam.webm`), path.join(dir, 'clips', c0.id, '_thumb.jpg'), 0.5)
@@ -416,40 +424,80 @@ function summarizeProject(dir) {
     durationMs,
     hasFinal,
     finalPath: hasFinal ? finalPath : null,
+    hasFinal9x16,
+    final9x16Path: hasFinal9x16 ? final9x16Path : null,
     previewDataUrl,
+    preview9x16DataUrl,
     composeOpts: proj.compose_opts || null,
   }
 }
 
 // ---- Agent brief builders --------------------------------------------------
 
-const DEFAULT_OPTS = { aspect: '16:9', subtitles: true, model: 'medium', pip: 'br', tone: '', cropMenubar: false, sfx: true }
+const DEFAULT_OPTS = { aspect: 'both', subtitles: true, model: 'medium', pip: 'br', tone: '', cropMenubar: false, sfx: true }
+
+// Normalize the aspect knob: anything that isn't an explicit single format means both.
+function normAspect(opts) {
+  const a = opts && opts.aspect
+  return a === '16:9' || a === '9:16' ? a : 'both'
+}
+// Human list of the requested output file(s), for the prompt goal lines.
+function aspectGoal(opts) {
+  const a = normAspect(opts)
+  if (a === '16:9') return '`edit/final.mp4` (16:9, 1920x1080)'
+  if (a === '9:16') return '`edit/final_9x16.mp4` (9:16, 1080x1920)'
+  return 'BOTH `edit/final.mp4` (16:9, 1920x1080) AND `edit/final_9x16.mp4` (9:16, 1080x1920)'
+}
 
 function optsLines(opts) {
   const o = { ...DEFAULT_OPTS, ...(opts || {}) }
+  const aspect = normAspect(o)
+  const aspectBlock = {
+    'both': [
+      '- Deliver BOTH resolutions (like avatar-muton does): `edit/final.mp4` in 1920x1080 (horizontal,',
+      '  YouTube) AND `edit/final_9x16.mp4` in 1080x1920 (vertical, Shorts/Reels/TikTok). Same edit,',
+      '  two canvases. render.py auto-reframes multicam for vertical: `fullcam` fills the frame, screen',
+      '  segments (`fullscreen`/`pip`) get a blurred-fill background instead of black bars with a larger',
+      '  cam PiP, and captions ride high above the Shorts/Reels UI — you just set the EDL "output" to',
+      '  each size and render twice. Render any HyperFrames graphic at BOTH output sizes so the cut-in',
+      '  segment matches each canvas.',
+    ].join('\n'),
+    '16:9': [
+      '- Deliver ONLY `edit/final.mp4` in 1920x1080 (16:9 horizontal, YouTube). The user did NOT ask',
+      '  for a vertical version this time — do NOT render `final_9x16.mp4`. Render HyperFrames graphics',
+      '  at 1920x1080 only.',
+    ].join('\n'),
+    '9:16': [
+      '- Deliver ONLY `edit/final_9x16.mp4` in 1080x1920 (9:16 vertical, Shorts/Reels/TikTok). The user',
+      '  did NOT ask for a horizontal version this time — do NOT render `final.mp4`. render.py',
+      '  auto-reframes multicam for vertical: `fullcam` fills the frame, screen segments',
+      '  (`fullscreen`/`pip`) get a blurred-fill background, and captions ride high above the',
+      '  Shorts/Reels UI. Render HyperFrames graphics at 1080x1920 only.',
+    ].join('\n'),
+  }[aspect]
+  const subs169 = [
+    '  * 16:9 `final.mp4` (YouTube): DO NOT burn subtitles into the picture. Render it with',
+    '    `helpers/render.py … --subs-mode sidecar` so a `final.srt` is written NEXT TO the mp4 (a file,',
+    '    not baked-in text). That is all YouTube needs.',
+  ]
+  const subs916 = [
+    '  * 9:16 `final_9x16.mp4` (Shorts/Reels/TikTok): BURN Hormozi-style captions (big UPPERCASE words,',
+    '    the ACTIVE word highlighted in an accent color, animated pop). Place them HIGH (~55-60% down the',
+    '    frame) so they sit ABOVE the bottom-center PiP camera, never over the mouth. Build them as a',
+    '    TRANSPARENT HyperFrames overlay synced to the Whisper WORD timestamps (start from a `caption-*`',
+    '    registry example; scale word times to the real clip duration), render it to a transparent',
+    '    WebM/MOV, add it to the EDL `overlays` for the VERTICAL render only, and render that canvas with',
+    '    `--subs-mode off` (the captions come from the overlay, so ffmpeg must not also burn an SRT).',
+    '    (This machine\'s ffmpeg has no libass, so the `subtitles` filter is unavailable — the HyperFrames',
+    '    overlay is how you burn captions here; do NOT rely on `--subs-mode burn`.)',
+  ]
   return [
-    '- Deliver BOTH resolutions (like avatar-muton does): `edit/final.mp4` in 1920x1080 (horizontal,',
-    '  YouTube) AND `edit/final_9x16.mp4` in 1080x1920 (vertical, Shorts/Reels/TikTok). Same edit,',
-    '  two canvases. render.py auto-reframes multicam for vertical: `fullcam` fills the frame, screen',
-    '  segments (`fullscreen`/`pip`) get a blurred-fill background instead of black bars with a larger',
-    '  cam PiP, and captions ride high above the Shorts/Reels UI — you just set the EDL "output" to',
-    '  each size and render twice. Render any HyperFrames graphic at BOTH output sizes so the cut-in',
-    '  segment matches each canvas.',
+    aspectBlock,
     o.subtitles ? [
       '- SUBTITLES — DIFFERENT PER FORMAT (user preference, important):',
-      '  * 16:9 `final.mp4` (YouTube): DO NOT burn subtitles into the picture. Render it with',
-      '    `helpers/render.py … --subs-mode sidecar` so a `final.srt` is written NEXT TO the mp4 (a file,',
-      '    not baked-in text). That is all YouTube needs.',
-      '  * 9:16 `final_9x16.mp4` (Shorts/Reels/TikTok): BURN Hormozi-style captions (big UPPERCASE words,',
-      '    the ACTIVE word highlighted in an accent color, animated pop). Place them HIGH (~55-60% down the',
-      '    frame) so they sit ABOVE the bottom-center PiP camera, never over the mouth. Build them as a',
-      '    TRANSPARENT HyperFrames overlay synced to the Whisper WORD timestamps (start from a `caption-*`',
-      '    registry example; scale word times to the real clip duration), render it to a transparent',
-      '    WebM/MOV, add it to the EDL `overlays` for the VERTICAL render only, and render that canvas with',
-      '    `--subs-mode off` (the captions come from the overlay, so ffmpeg must not also burn an SRT).',
-      '    (This machine\'s ffmpeg has no libass, so the `subtitles` filter is unavailable — the HyperFrames',
-      '    overlay is how you burn captions here; do NOT rely on `--subs-mode burn`.)',
-    ].join('\n') : '- SUBTITLES: OFF for both formats — render with `--subs-mode off` and add no caption overlay.',
+      ...(aspect !== '9:16' ? subs169 : []),
+      ...(aspect !== '16:9' ? subs916 : []),
+    ].join('\n') : '- SUBTITLES: OFF — render with `--subs-mode off` and add no caption overlay.',
     `- Transcription: run \`helpers/transcribe_whisper.py --model ${o.model}\` on each clip's webcam.webm. Do NOT use ElevenLabs.`,
     `- Default PiP corner: ${o.pip}.`,
     o.cropMenubar ? [
@@ -512,11 +560,11 @@ function composePrompt(opts) {
     'OPTIONS:',
     ...optsLines(opts),
     '',
-    'Do the FULL pipeline and WRITE BOTH `edit/final.mp4` (16:9) and `edit/final_9x16.mp4` (9:16):',
+    `Do the FULL pipeline and WRITE ${aspectGoal(opts)}:`,
     '  1. transcribe each clip (Whisper) → pack → read the transcript',
     '  2. decide shots editorially and build a multicam EDL per clip',
-    '  3. render each clip with `helpers/render.py` and concatenate them in clip order — do this once',
-    '     per canvas (output 1920x1080 → final.mp4, output 1080x1920 → final_9x16.mp4)',
+    '  3. render each clip with `helpers/render.py` and concatenate them in clip order — once per',
+    '     REQUESTED canvas (see OPTIONS: output 1920x1080 → final.mp4, output 1080x1920 → final_9x16.mp4)',
     '  4. ADD GRAPHICS with HyperFrames, generously, using the `graphic` LAYOUT (see rules below).',
     '',
     'GRAPHICS — dynamic like a pro edit, but SYNCED TO THE SCRIPT (this is what was wrong before):',
@@ -539,14 +587,12 @@ function composePrompt(opts) {
     '    CROSSFADES in/out (softer than the old hard cut-in). NEVER a silent/standalone clip — the voice must',
     '    always be heard. Do NOT overlay graphics on top of the live demo.',
     '  - Minimum readable: at least ~3-4s AND at least (its narration +1s); hold the final frame ~1s.',
-    '  - Render every HyperFrames graphic at BOTH output sizes (16:9 and 9:16) so the segment matches each canvas.',
+    '  - Render every HyperFrames graphic at every REQUESTED output size (see OPTIONS) so the segment matches each canvas.',
     '',
-    'Subtitles follow the per-format policy in OPTIONS: the 16:9 gets a `.srt` sidecar (NOT burned), the',
-    '9:16 gets BURNED Hormozi captions via a HyperFrames overlay (high, above the PiP camera).',
+    'Subtitles follow the per-format policy in OPTIONS.',
     '',
     'Because this is headless, DO NOT ask for confirmation and DO NOT stop to discuss strategy —',
-    'pick sensible defaults and proceed. Keep going until BOTH `edit/final.mp4` and',
-    '`edit/final_9x16.mp4` exist.',
+    `pick sensible defaults and proceed. Keep going until ${aspectGoal(opts)} exists.`,
   ].join('\n')
 }
 
@@ -569,8 +615,7 @@ function montageBrief(opts) {
     '`sync.json` tiene `offset_ms`. Usa el modo MULTICAM de la skill (layouts `fullcam`/`fullscreen`/',
     '`pip`/`graphic` en la EDL, renderizando con `helpers/render.py`).',
     '',
-    'OBJETIVO: generar SIEMPRE **`edit/final.mp4`** (16:9, 1920x1080, YouTube) y **`edit/final_9x16.mp4`**',
-    '(9:16, 1080x1920, Shorts/Reels). Mismo montaje, dos lienzos (renderiza dos veces con distinto `output`).',
+    `OBJETIVO: generar ${aspectGoal(opts)} — mismo montaje, un render por lienzo pedido (cambia el \`output\` de la EDL).`,
     '',
     'OPCIONES DE ESTE PROYECTO:',
     ...optsLines(opts),
@@ -613,8 +658,8 @@ function iteratePrompt(feedback, opts) {
     'Keep the SMOOTH montage style: PiP base with a slow punch-in zoom, CROSSFADES between shots (not',
     'hard cuts — the user dislikes framing cuts), varied PiP position/size, graphics that span their whole',
     'narration with elements synced to the spoken words, and fresh HeyGen SFX/music timed to the words.',
-    'Re-render BOTH `edit/final.mp4` (16:9) and `edit/final_9x16.mp4` (9:16).',
-    'Do NOT ask for confirmation. Keep going until both updated finals exist.',
+    `Re-render ${aspectGoal(opts)}.`,
+    'Do NOT ask for confirmation. Keep going until the updated final(s) exist.',
   ].join('\n')
 }
 
@@ -724,6 +769,8 @@ function rewritePrompt(scriptPath, feedback, opts) {
 
 // ---- Agent job manager (compose + iterate) ---------------------------------
 
+// Structured progress event {kind:'cmd'|'tool'|'text'|'status', label} so the
+// renderer can group tool activity and show assistant text as chat bubbles.
 function progressFromEvent(ev) {
   if (!ev || typeof ev !== 'object') return null
   if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
@@ -731,16 +778,16 @@ function progressFromEvent(ev) {
       if (block.type === 'tool_use') {
         const name = block.name || 'tool'
         if (name === 'Bash' && block.input && block.input.command) {
-          return `$ ${String(block.input.command).split('\n')[0].slice(0, 80)}`
+          return { kind: 'cmd', label: String(block.input.command).split('\n')[0].slice(0, 120) }
         }
-        return `· ${name}`
+        return { kind: 'tool', label: name }
       }
       if (block.type === 'text' && block.text && block.text.trim()) {
-        return block.text.trim().replace(/\s+/g, ' ').slice(0, 100)
+        return { kind: 'text', label: block.text.trim().replace(/\s+/g, ' ').slice(0, 400) }
       }
     }
   }
-  if (ev.type === 'result') return ev.is_error ? 'error en el agente' : 'agente terminado'
+  if (ev.type === 'result') return { kind: 'status', label: ev.is_error ? 'error en el agente' : 'agente terminado' }
   return null
 }
 
@@ -750,11 +797,23 @@ function broadcast(channel, payload) {
   }
 }
 
-function pushLog(key, msg) {
-  const job = agentJobs.get(key)
-  if (job) { job.log.push(msg); if (job.log.length > 600) job.log.shift() }
-  broadcast('agent-progress', { key, msg })
+// Flat one-line form of an event, kept for the raw log / old renderers.
+function evToMsg(ev) {
+  if (ev.kind === 'cmd') return `$ ${ev.label}`
+  if (ev.kind === 'tool') return `· ${ev.label}`
+  return ev.label
 }
+function pushEvent(key, ev) {
+  const msg = evToMsg(ev)
+  const job = agentJobs.get(key)
+  if (job) {
+    job.log.push(msg); if (job.log.length > 600) job.log.shift()
+    job.events = job.events || []
+    job.events.push(ev); if (job.events.length > 300) job.events.shift()
+  }
+  broadcast('agent-progress', { key, msg, ev })
+}
+function pushLog(key, msg) { pushEvent(key, { kind: 'status', label: msg }) }
 
 // The HeyGen API key/base live in avatar-muton's `.env` (canonical, per CLAUDE.md).
 // Inject them into the headless agent's environment so it can pull NEW sound
@@ -780,7 +839,7 @@ function runAgentJob(key, cwd, prompt, successCheck, startMsg, extra = {}) {
   if (existing && existing.status === 'running') return { started: false, already: true }
 
   const claude = claudePath()
-  const job = { status: 'running', log: [], child: null, error: null, result: null, sessionId: null }
+  const job = { status: 'running', log: [], events: [], child: null, error: null, result: null, sessionId: null }
   agentJobs.set(key, job)
 
   if (!claude) {
@@ -827,7 +886,7 @@ function runAgentJob(key, cwd, prompt, successCheck, startMsg, extra = {}) {
           job.sessionId = ev.session_id
           try { extra.onSession && extra.onSession(ev.session_id) } catch { /* ignore */ }
         }
-        const m = progressFromEvent(ev); if (m) pushLog(key, m)
+        const m = progressFromEvent(ev); if (m) pushEvent(key, m)
       } catch { /* non-json */ }
     }
   })
@@ -1042,11 +1101,17 @@ ipcMain.handle('set-compose-opts', async (_e, { dir, opts }) => {
 
 // ---- IPC: compose / iterate (headless Claude Code + video-use) -------------
 
-function composeSuccess(dir) {
+// Success = the REQUESTED final(s) exist (per opts.aspect). Invalidates both
+// cached posters so the new render gets fresh thumbnails.
+function composeSuccess(dir, opts) {
+  const aspect = normAspect(opts)
   return () => {
-    const finalPath = path.join(dir, 'edit', 'final.mp4')
-    if (!fs.existsSync(finalPath)) return null
+    const p169 = path.join(dir, 'edit', 'final.mp4')
+    const p916 = path.join(dir, 'edit', 'final_9x16.mp4')
+    if (aspect !== '9:16' && !fs.existsSync(p169)) return null
+    if (aspect !== '16:9' && !fs.existsSync(p916)) return null
     try { fs.unlinkSync(path.join(dir, 'edit', '_poster.jpg')) } catch { /* none */ }
+    try { fs.unlinkSync(path.join(dir, 'edit', '_poster_9x16.jpg')) } catch { /* none */ }
     return { summary: summarizeProject(dir) }
   }
 }
@@ -1068,10 +1133,10 @@ function resumeIdFor(dir, resume) {
 }
 
 ipcMain.handle('compose-project', async (_e, { dir, opts, resume }) =>
-  runAgentJob(dir, dir, composePrompt(opts), composeSuccess(dir), 'Lanzando Claude Code (video-use)…',
+  runAgentJob(dir, dir, composePrompt(opts), composeSuccess(dir, opts), 'Lanzando Claude Code (video-use)…',
     { resumeId: resumeIdFor(dir, resume), onSession: saveAgentSession(dir) }))
 ipcMain.handle('iterate-project', async (_e, { dir, feedback, opts, resume }) =>
-  runAgentJob(dir, dir, iteratePrompt(feedback, opts), composeSuccess(dir), 'Aplicando cambios…',
+  runAgentJob(dir, dir, iteratePrompt(feedback, opts), composeSuccess(dir, opts), 'Aplicando cambios…',
     { resumeId: resumeIdFor(dir, resume), onSession: saveAgentSession(dir) }))
 
 // Does this project already have a saved conversation to continue?
@@ -1083,7 +1148,13 @@ ipcMain.handle('agent-session', async (_e, dir) => {
 ipcMain.handle('agent-status', async (_e, key) => {
   const job = agentJobs.get(key)
   if (!job) return null
-  return { status: job.status, log: job.log.slice(-200), error: job.error || null, result: job.result || null }
+  return {
+    status: job.status,
+    log: job.log.slice(-200),
+    events: (job.events || []).slice(-200),
+    error: job.error || null,
+    result: job.result || null,
+  }
 })
 
 ipcMain.handle('agent-cancel', async (_e, key) => {
