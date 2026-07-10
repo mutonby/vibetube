@@ -105,7 +105,22 @@ function setStatus(text, cls = '') {
   el('status').textContent = text
   el('status').className = 'status' + (cls ? ' ' + cls : '')
 }
-function setCrumb(text) { el('crumb').textContent = text || '' }
+// Breadcrumb con segmentos clicables: setCrumb('texto') o
+// setCrumb([{label, go?}, …]) — el último segmento es la ubicación actual.
+function setCrumb(parts) {
+  const c = el('crumb'); c.innerHTML = ''
+  if (!parts || !parts.length) return
+  if (typeof parts === 'string') parts = [{ label: parts }]
+  parts.forEach((p, i) => {
+    if (i) { const s = document.createElement('span'); s.className = 'crumb-sep'; s.textContent = '›'; c.appendChild(s) }
+    const seg = document.createElement('span')
+    const isLast = i === parts.length - 1
+    seg.className = isLast ? 'crumb-here' : 'crumb-seg'
+    seg.textContent = p.label
+    if (p.go && !isLast) seg.addEventListener('click', () => { if (!state.recording) p.go() })
+    c.appendChild(seg)
+  })
+}
 
 // ---- View navigation -------------------------------------------------------
 
@@ -152,7 +167,13 @@ function setStage(stage) {
   state.stage = stage
   document.querySelectorAll('#viewProject .stage-panel').forEach((p) => p.classList.toggle('hidden', p.dataset.stage !== stage))
   document.querySelectorAll('#pipeline .pl-step').forEach((b) => b.classList.toggle('active', b.dataset.stage === stage))
-  if (state.currentName) setCrumb(`${state.currentName} · ${STAGE_LABEL[stage] || ''}`)
+  if (state.currentName) {
+    setCrumb([
+      { label: 'Proyectos', go: showHome },
+      { label: state.currentName, go: () => openProject(state.current) },
+      { label: STAGE_LABEL[stage] || '' },
+    ])
+  }
 }
 function renderPipeline(d, job) {
   const isFinal = d.hasFinal || d.hasFinal9x16
@@ -171,7 +192,12 @@ async function showRecord(dir, name) {
   el('recProjName').textContent = name
   updateClipsCta()
   hideAll(); el('viewRecord').classList.remove('hidden')
-  el('timer').classList.remove('hidden'); setCrumb(`${name} · grabar`); setNav('projects')
+  el('timer').classList.remove('hidden'); setNav('projects')
+  setCrumb([
+    { label: 'Proyectos', go: showHome },
+    { label: name, go: () => openProject(dir) },
+    { label: 'Grabar' },
+  ])
   const tp = state.detail && state.detail.dir === dir ? (state.detail.teleprompter || '') : ''
   el('tpText').value = tp
   el('tpEditor').classList.add('hidden')
@@ -210,6 +236,7 @@ async function saveTeleprompter() {
   updateTpToggle()
   el('tpEditor').classList.add('hidden')
   log('teleprompter guardado', 'ok')
+  toast('✓ Teleprompter guardado', 'ok')
 }
 
 async function renderRecClips() {
@@ -227,7 +254,7 @@ async function renderRecClips() {
       <div class="rc-row"><span>Clip ${i + 1}</span><button class="rc-del danger" title="borrar">${icon('trash', 'icon icon-sm')}</button></div>`
     card.querySelector('.rc-play').addEventListener('click', () => openVideo(`rsmedia://media/${encodeURIComponent(c.webcamPath)}`))
     card.querySelector('.rc-del').addEventListener('click', async () => {
-      const ok = await openConfirm('Borrar clip', `¿Borrar el Clip ${i + 1}? Se moverá a la papelera.`)
+      const ok = await openConfirm('Borrar clip', `¿Borrar el Clip ${i + 1}? Se moverá a la papelera.`, { danger: true })
       if (!ok) return
       await window.studio.deleteClip(state.current, c.id)
       renderRecClips()
@@ -325,8 +352,10 @@ async function scriptDone(key, ok, result, error) {
   setScriptBusy(false)
   if (key === 'style') {
     el('profileStatus').textContent = ok ? '✓ Perfil de estilo listo. Ya puedes generar guiones.' : '✗ ' + (error || 'error')
+    toast(ok ? '✓ Perfil de estilo listo' : '✗ El análisis falló', ok ? 'ok' : 'err')
   } else {
     el('genStatus').textContent = ok ? '✓ guion listo' : '✗ ' + (error || 'error')
+    toast(ok ? '✓ Guion listo' : '✗ La generación falló', ok ? 'ok' : 'err')
     if (ok && result) {
       state.currentScriptPath = result.path
       el('scriptOut').value = plainText(result.text || '')
@@ -372,10 +401,10 @@ async function rewriteScript() {
 async function saveCurrentScript() {
   if (!state.currentScriptPath) { el('genStatus').textContent = 'genera un guion primero'; return }
   await window.studio.saveScript(state.currentScriptPath, el('scriptOut').value)
-  el('genStatus').textContent = '✓ guardado'; renderScriptsList()
+  toast('✓ Guion guardado', 'ok'); renderScriptsList()
 }
 async function copyScript() {
-  try { await navigator.clipboard.writeText(el('scriptOut').value); el('genStatus').textContent = '✓ copiado' } catch { /* ignore */ }
+  try { await navigator.clipboard.writeText(el('scriptOut').value); toast('✓ Copiado al portapapeles', 'ok') } catch { /* ignore */ }
 }
 async function renderScriptsList() {
   if (!state.root) return
@@ -592,7 +621,7 @@ async function moveClip(clipId, delta) {
   await openProject(state.current, state.stage)
 }
 async function deleteClip(clipId, n) {
-  const ok = await openConfirm('Borrar clip', `¿Borrar el Clip ${n}? Se moverá a la papelera.`)
+  const ok = await openConfirm('Borrar clip', `¿Borrar el Clip ${n}? Se moverá a la papelera.`, { danger: true })
   if (!ok) return
   await window.studio.deleteClip(state.current, clipId)
   await openProject(state.current, state.stage)
@@ -605,7 +634,7 @@ async function renameProject() {
   await openProject(state.current, state.stage)
 }
 async function deleteProject() {
-  const ok = await openConfirm('Borrar proyecto', `¿Borrar “${state.currentName}” entero? Se moverá a la papelera.`)
+  const ok = await openConfirm('Borrar proyecto', `¿Borrar “${state.currentName}” entero? Se moverá a la papelera.`, { danger: true })
   if (!ok) return
   const res = await window.studio.deleteProject(state.current)
   if (res.ok) { state.projects = state.projects.filter((p) => p.dir !== state.current); showHome() }
@@ -1552,17 +1581,23 @@ function openPrompt(title, value = '') {
     el('modal').classList.remove('hidden'); input.focus(); input.select()
   })
 }
-function openConfirm(title, text) {
+function openConfirm(title, text, opts = {}) {
   return new Promise((resolve) => {
     modalResolver = resolve
     el('modalTitle').textContent = title
     el('modalText').textContent = text; el('modalText').classList.remove('hidden')
     el('modalInput').classList.add('hidden')
+    const card = el('modal').querySelector('.modal-card')
+    card.classList.toggle('danger', !!opts.danger)
+    el('modalOk').textContent = opts.danger ? opts.okLabel || 'Borrar' : 'OK'
     el('modal').classList.remove('hidden')
   })
 }
 function closeModal(result) {
   el('modal').classList.add('hidden')
+  const card = el('modal').querySelector('.modal-card')
+  card.classList.remove('danger')
+  el('modalOk').textContent = 'OK'
   const r = modalResolver; modalResolver = null
   if (r) r(result)
 }
