@@ -95,105 +95,116 @@
       </section>
     </main>
 
-    <!-- ============================ PROJECT DETAIL ======================== -->
+    <!-- ============================ PROJECT HUB =========================== -->
     <main id="viewProject" class="detail hidden">
       <section class="panel">
-        <div class="panel-head">
-          <div class="head-left">
+        <div class="proj-header">
+          <div class="proj-title-row">
             <button id="backHome" class="btn-tertiary"><svg class="icon"><use href="#i-arrow-left"/></svg> Proyectos</button>
             <h2 id="detailName">Proyecto</h2>
             <span id="detailBadge" class="badge draft">borrador</span>
+            <div class="head-actions">
+              <button id="renameProj" class="btn-secondary"><svg class="icon"><use href="#i-pencil"/></svg> Renombrar</button>
+              <button id="openFolder" class="btn-secondary"><svg class="icon"><use href="#i-folder"/></svg> Carpeta</button>
+              <button id="deleteProj" class="btn-secondary danger"><svg class="icon"><use href="#i-trash"/></svg> Borrar</button>
+            </div>
           </div>
-          <div class="head-actions">
-            <button id="recHere" class="btn-rec"><svg class="icon"><use href="#i-record"/></svg> Grabar clip</button>
-            <button id="renameProj" class="btn-secondary"><svg class="icon"><use href="#i-pencil"/></svg> Renombrar</button>
-            <button id="openFolder" class="btn-secondary"><svg class="icon"><use href="#i-folder"/></svg> Carpeta</button>
-            <button id="deleteProj" class="btn-secondary danger"><svg class="icon"><use href="#i-trash"/></svg> Borrar</button>
-          </div>
+          <nav class="pipeline" id="pipeline">
+            <button class="pl-step" data-stage="grabar"><span class="pl-n">1</span> Grabar <span class="pl-meta" id="plClips"></span></button>
+            <button class="pl-step" data-stage="montar"><span class="pl-n">2</span> Montar <span class="pl-meta" id="plMontar"></span></button>
+            <button class="pl-step" data-stage="resultado"><span class="pl-n">3</span> Resultado <span class="pl-meta" id="plResult"></span></button>
+          </nav>
         </div>
 
         <div class="detail-body">
-          <!-- ① Clips -->
-          <section class="card">
-            <div class="card-head">
-              <h3 id="clipsTitle">Clips</h3>
-              <span class="card-help">El material en bruto. Graba uno o varios clips.</span>
+          <!-- Etapa ① Grabar: los clips en bruto -->
+          <section class="stage-panel hidden" data-stage="grabar">
+            <div class="card">
+              <div class="card-head">
+                <h3 id="clipsTitle">Clips</h3>
+                <span class="card-help">El material en bruto. Graba uno o varios clips.</span>
+                <span class="card-spacer"></span>
+                <button id="recHere" class="btn-rec"><svg class="icon"><use href="#i-record"/></svg> Grabar clip</button>
+              </div>
+              <div id="clipsGrid" class="clips-grid"></div>
             </div>
-            <div id="clipsGrid" class="clips-grid"></div>
           </section>
 
-          <!-- ② Montar -->
-          <section class="card">
-            <div class="card-head">
-              <h3>Montar el vídeo</h3>
-              <span class="card-help">Claude Code edita tus clips con la skill video-use (transcribe con Whisper local, elige planos, subtítulos).</span>
-            </div>
-            <div class="compose-actions">
-              <button id="composeBtn" class="btn-primary big"><svg class="icon"><use href="#i-sparkle"/></svg> Componer vídeo</button>
-              <button id="continueBtn" class="btn-secondary"><svg class="icon"><use href="#i-chat"/></svg> Continuar sesión</button>
-              <button id="cancelBtn" class="btn-secondary danger hidden"><svg class="icon"><use href="#i-x"/></svg> Cancelar</button>
-              <button id="toggleOpts" class="btn-tertiary">▸ Opciones</button>
-              <button id="toggleLog" class="btn-tertiary hidden">▸ Ver progreso</button>
-              <span id="composeStatus" class="compose-status"></span>
-            </div>
-            <p class="panel-help">Al pulsar <b>Componer</b> se abre Claude Code aquí: te propone el plan de montaje, lo apruebas (Opus 4.8, modo plan) y lo ejecuta en vivo. Luego puedes seguir pidiéndole cambios en la misma sesión.</p>
-            <div id="termPanel" class="term-panel hidden">
-              <div class="term-head">
-                <span class="term-title"><svg class="icon"><use href="#i-terminal"/></svg> Claude Code — <span id="termProj"></span></span>
-                <span id="termStatus" class="term-status"></span>
-                <button id="termClose" class="btn-tertiary"><svg class="icon"><use href="#i-x"/></svg> Cerrar</button>
+          <!-- Etapa ② Montar: opciones + Editor (conversación con el agente) -->
+          <section class="stage-panel hidden" data-stage="montar">
+            <div id="composeOptsBar" class="opts-bar">
+              <div class="opt"><span class="opt-lbl">Formato</span>
+                <span class="segmented" id="aspectSeg">
+                  <button type="button" data-aspect="16:9">16:9</button>
+                  <button type="button" data-aspect="9:16">9:16</button>
+                  <button type="button" data-aspect="both" class="active">Ambos</button>
+                </span>
               </div>
-              <div id="term" class="term-body"></div>
-            </div>
-            <div id="optsPanel" class="opts-panel hidden">
-              <div class="opts">
-                <label>Formato
-                  <select id="optAspect">
-                    <option value="16:9">16:9 horizontal (YouTube)</option>
-                    <option value="9:16">9:16 vertical (Shorts/Reels)</option>
-                  </select>
-                </label>
-                <label>Subtítulos
-                  <select id="optSubs"><option value="yes">Sí</option><option value="no">No</option></select>
-                </label>
-                <label>Calidad transcripción
-                  <select id="optModel">
-                    <option value="small">small (rápido)</option>
-                    <option value="medium">medium (recomendado)</option>
-                    <option value="large-v3">large-v3 (máxima)</option>
-                  </select>
-                </label>
-                <label>Cámara en esquina
-                  <select id="optPip">
-                    <option value="br">↘ abajo-dcha</option>
-                    <option value="bl">↙ abajo-izq</option>
-                    <option value="tr">↗ arriba-dcha</option>
-                    <option value="tl">↖ arriba-izq</option>
-                  </select>
-                </label>
+              <label class="opt switch"><input type="checkbox" id="optSubs" checked /> Subtítulos</label>
+              <label class="opt switch"><input type="checkbox" id="optSfx" /> SFX</label>
+              <label class="opt switch"><input type="checkbox" id="optCrop" /> Quitar barra de menú</label>
+              <div class="opt"><span class="opt-lbl">Cámara</span>
+                <span class="pip" id="pipPicker" title="Esquina de la cámara (PiP)">
+                  <button type="button" data-pip="tl" title="arriba-izquierda">◰</button>
+                  <button type="button" data-pip="tr" title="arriba-derecha">◳</button>
+                  <button type="button" data-pip="bl" title="abajo-izquierda">◱</button>
+                  <button type="button" data-pip="br" title="abajo-derecha" class="active">◲</button>
+                </span>
               </div>
-              <label class="blur-toggle opt-check switch"><input type="checkbox" id="optCrop" /> Quitar barra de menú de macOS (recorte superior)</label>
-              <label class="blur-toggle opt-check switch"><input type="checkbox" id="optSfx" /> Añadir efectos de sonido (SFX) timados</label>
-              <input id="optTone" class="tone" placeholder="Indicaciones de estilo (opcional): “dinámico, cortes rápidos, energía alta”…" />
-            </div>
-            <pre id="composeLog" class="compose-log hidden"></pre>
-          </section>
-
-          <!-- ③ Resultado -->
-          <section class="card">
-            <div class="card-head">
-              <h3>Resultado</h3>
-              <span class="card-help">Tu vídeo final, listo para publicar.</span>
-            </div>
-            <div id="finalArea" class="final-area">
-              <div class="empty">Aún no hay vídeo final. Graba algún clip y pulsa <b>Componer vídeo</b>.</div>
-            </div>
-            <div id="iterateBlock" class="iterate hidden">
-              <input id="feedbackBox" placeholder="¿Algún cambio? “más planos de cara”, “ponlo vertical”, “cortes más rápidos”…" />
-              <button id="iterateBtn" class="btn-primary"><svg class="icon"><use href="#i-refresh"/></svg> Aplicar cambios</button>
-              <label class="blur-toggle resume-toggle switch" id="resumeRow">
-                <input type="checkbox" id="resumeChk" checked /> Continuar la conversación (recuerda los cambios anteriores)
+              <label class="opt">Transcripción
+                <select id="optModel">
+                  <option value="small">small (rápido)</option>
+                  <option value="medium">medium</option>
+                  <option value="large-v3">large-v3 (máxima)</option>
+                </select>
               </label>
+              <input id="optTone" class="grow" placeholder="Estilo (opcional): “dinámico, cortes rápidos, energía alta”…" />
+            </div>
+
+            <div class="card">
+              <div id="editorPanel" class="editor">
+                <div class="editor-head">
+                  <span class="editor-title"><svg class="icon"><use href="#i-sparkle"/></svg> Editor</span>
+                  <button id="sessionChip" class="chip session hidden"></button>
+                  <span id="editorStatus" class="compose-status"></span>
+                  <button id="cancelBtn" class="btn-secondary danger mini hidden"><svg class="icon icon-sm"><use href="#i-x"/></svg> Cancelar</button>
+                  <button id="editorAdv" class="btn-tertiary mini" title="Avanzado"><svg class="icon"><use href="#i-more"/></svg></button>
+                  <div id="editorAdvMenu" class="menu hidden">
+                    <button id="advTermNew"><svg class="icon icon-sm"><use href="#i-terminal"/></svg> Terminal interactiva (sesión nueva)</button>
+                    <button id="advTermCont"><svg class="icon icon-sm"><use href="#i-terminal"/></svg> Terminal interactiva (continuar)</button>
+                    <button id="advRawLog"><svg class="icon icon-sm"><use href="#i-file-text"/></svg> Ver log crudo</button>
+                  </div>
+                </div>
+                <div id="editorFeed" class="editor-feed hidden"></div>
+                <div id="editorCta" class="editor-cta">
+                  <button id="composeBtn" class="btn-primary big"><svg class="icon"><use href="#i-sparkle"/></svg> Montar vídeo</button>
+                  <span class="hint">Claude Code edita tus clips: transcribe, elige planos, añade gráficos y SFX. Tarda varios minutos.</span>
+                </div>
+                <div class="editor-input-row">
+                  <input id="editorInput" placeholder="Pide un cambio: “más planos de cara”, “cortes más rápidos”…" />
+                  <button id="editorSend" class="btn-primary" title="Enviar"><svg class="icon"><use href="#i-chevron-up"/></svg></button>
+                </div>
+                <div id="termPanel" class="term-panel hidden">
+                  <div class="term-head">
+                    <span class="term-title"><svg class="icon"><use href="#i-terminal"/></svg> Claude Code — <span id="termProj"></span></span>
+                    <span id="termStatus" class="term-status"></span>
+                    <button id="termClose" class="btn-tertiary"><svg class="icon"><use href="#i-x"/></svg> Cerrar</button>
+                  </div>
+                  <div id="term" class="term-body"></div>
+                </div>
+                <pre id="composeLog" class="compose-log hidden"></pre>
+              </div>
+            </div>
+          </section>
+
+          <!-- Etapa ③ Resultado -->
+          <section class="stage-panel hidden" data-stage="resultado">
+            <div class="card">
+              <div class="card-head">
+                <h3>Resultado</h3>
+                <span class="card-help">Tu vídeo final, listo para publicar.</span>
+              </div>
+              <div id="finalArea" class="final-area"></div>
             </div>
           </section>
         </div>

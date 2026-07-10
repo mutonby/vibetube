@@ -78,6 +78,9 @@ const state = {
   pauseStart: 0,
   timerInt: null,
   composing: false,
+  stage: 'grabar',       // etapa visible del hub: grabar | montar | resultado
+  editorResume: true,    // el chip de sesión: continuar la conversación anterior
+  hasSession: false,     // el proyecto tiene una conversación guardada
 }
 
 // Persisted crop rectangle (normalised). Defaults to a centred 60%-wide box.
@@ -123,18 +126,45 @@ function showHome() {
   hideAll(); el('viewHome').classList.remove('hidden')
   el('timer').classList.add('hidden'); setCrumb(''); setStatus('listo'); setNav('projects'); loadHome()
 }
-async function openProject(dir) {
+async function openProject(dir, stage) {
   stopCam()
   const d = await window.studio.projectDetail(dir)
   if (!d) { return }
   state.current = d.dir; state.currentName = d.name; state.detail = d
   renderDetail(d)
   hideAll(); el('viewProject').classList.remove('hidden')
-  el('timer').classList.add('hidden'); setCrumb(d.name); setStatus('listo'); setNav('projects')
-  // restore any in-flight compose for this project
+  el('timer').classList.add('hidden'); setStatus('listo'); setNav('projects')
   const job = await window.studio.agentStatus(dir)
-  if (job) restoreComposeUI(job)
-  else setComposeUI(false)
+  renderPipeline(d, job)
+  const sess = await window.studio.agentSession(dir)
+  updateSessionChip(!!(sess && sess.hasSession))
+  // etapa automática: sin clips → grabar; clips sin final → montar; final → resultado;
+  // un montaje en marcha siempre gana
+  const isFinal = d.hasFinal || d.hasFinal9x16
+  const auto = job && job.status === 'running' ? 'montar' : !d.clipCount ? 'grabar' : isFinal ? 'resultado' : 'montar'
+  setStage(stage || auto)
+  if (job) restoreEditor(job)
+  else { setEditorRunning(false); feedClear() }
+}
+
+const STAGE_LABEL = { grabar: 'Grabar', montar: 'Montar', resultado: 'Resultado' }
+function setStage(stage) {
+  state.stage = stage
+  document.querySelectorAll('#viewProject .stage-panel').forEach((p) => p.classList.toggle('hidden', p.dataset.stage !== stage))
+  document.querySelectorAll('#pipeline .pl-step').forEach((b) => b.classList.toggle('active', b.dataset.stage === stage))
+  if (state.currentName) setCrumb(`${state.currentName} · ${STAGE_LABEL[stage] || ''}`)
+}
+function renderPipeline(d, job) {
+  const isFinal = d.hasFinal || d.hasFinal9x16
+  const running = !!(job && job.status === 'running')
+  el('plClips').textContent = d.clipCount ? `${d.clipCount} clip${d.clipCount > 1 ? 's' : ''}` : '—'
+  el('plMontar').textContent = running ? 'montando…' : isFinal ? 'hecho ✓' : d.clipCount ? 'pendiente' : '—'
+  el('plResult').textContent = isFinal ? (d.hasFinal && d.hasFinal9x16 ? '2 formatos' : '1 formato') : '—'
+  document.querySelectorAll('#pipeline .pl-step').forEach((b) => {
+    const s = b.dataset.stage
+    b.classList.toggle('done', (s === 'grabar' && d.clipCount > 0) || ((s === 'montar' || s === 'resultado') && isFinal))
+    if (s === 'montar') b.classList.toggle('busy', running)
+  })
 }
 async function showRecord(dir, name) {
   state.current = dir; state.currentName = name
@@ -447,27 +477,21 @@ function renderDetail(d) {
   el('detailBadge').textContent = isFinal ? (d.hasFinal && d.hasFinal9x16 ? 'final ✓ +9:16' : 'final ✓') : 'borrador'
   el('detailBadge').className = 'badge ' + (isFinal ? 'final' : 'draft')
 
-  // compose options
+  // compose options (siempre visibles en la barra de la etapa Montar)
   const o = d.composeOpts || {}
-  el('optAspect').value = o.aspect || '16:9'
-  el('optSubs').value = o.subtitles === false ? 'no' : 'yes'
+  // Los proyectos antiguos guardaban aspect '16:9' pero el montaje siempre generó
+  // ambos formatos; sin el marcador aspectV2 ese valor significa 'both'.
+  const aspect = o.aspect === '9:16' || o.aspect === 'both' ? o.aspect : o.aspectV2 && o.aspect === '16:9' ? '16:9' : 'both'
+  setSegActive('aspectSeg', 'aspect', aspect)
+  el('optSubs').checked = o.subtitles !== false
   el('optModel').value = o.model || 'medium'
-  el('optPip').value = o.pip || 'br'
+  setSegActive('pipPicker', 'pip', o.pip || 'br')
   el('optCrop').checked = o.cropMenubar === true
   el('optSfx').checked = o.sfx === true
   el('optTone').value = o.tone || ''
 
-  // reset the "Montar" section to its default collapsed state (compose-status
-  // restore re-opens it if a job is running or finished)
-  el('composeLog').textContent = ''
-  el('composeLog').classList.add('hidden')
-  el('toggleLog').classList.add('hidden'); el('toggleLog').textContent = '▸ Ver progreso'
-  el('optsPanel').classList.add('hidden'); el('toggleOpts').textContent = '▸ Opciones'
-  el('composeStatus').textContent = ''
-
   // final result (ambos aspectos)
   renderResult(d)
-  el('iterateBlock').classList.toggle('hidden', !isFinal)
 
   // clips
   el('clipsTitle').textContent = `Clips (${d.clips.length})`
@@ -533,12 +557,22 @@ function renderResult(d) {
     b.addEventListener('click', () => window.studio.revealPath(paths[b.dataset.reveal])))
 }
 
+// Controles tipo segmented/picker: valor = data-attr del botón .active.
+function setSegActive(containerId, dataKey, value) {
+  document.querySelectorAll(`#${containerId} button`).forEach((b) => b.classList.toggle('active', b.dataset[dataKey] === value))
+}
+function segValue(containerId, dataKey, fallback) {
+  const b = document.querySelector(`#${containerId} button.active`)
+  return (b && b.dataset[dataKey]) || fallback
+}
+
 function currentOpts() {
   return {
-    aspect: el('optAspect').value,
-    subtitles: el('optSubs').value === 'yes',
+    aspect: segValue('aspectSeg', 'aspect', 'both'),
+    aspectV2: true, // elegido con la UI nueva (los '16:9' antiguos significaban ambos)
+    subtitles: el('optSubs').checked,
     model: el('optModel').value,
-    pip: el('optPip').value,
+    pip: segValue('pipPicker', 'pip', 'br'),
     cropMenubar: el('optCrop').checked,
     sfx: el('optSfx').checked,
     tone: el('optTone').value.trim(),
@@ -555,20 +589,20 @@ async function moveClip(clipId, delta) {
   if (j < 0 || j >= ids.length) return
   ;[ids[idx], ids[j]] = [ids[j], ids[idx]]
   await window.studio.reorderClips(state.current, ids)
-  await openProject(state.current)
+  await openProject(state.current, state.stage)
 }
 async function deleteClip(clipId, n) {
   const ok = await openConfirm('Borrar clip', `¿Borrar el Clip ${n}? Se moverá a la papelera.`)
   if (!ok) return
   await window.studio.deleteClip(state.current, clipId)
-  await openProject(state.current)
+  await openProject(state.current, state.stage)
 }
 async function renameProject() {
   const name = await openPrompt('Renombrar proyecto', state.currentName)
   if (name == null) return
   const s = await window.studio.renameProject(state.current, name.trim() || state.currentName)
   const idx = state.projects.findIndex((p) => p.dir === s.dir); if (idx >= 0) state.projects[idx] = s
-  await openProject(state.current)
+  await openProject(state.current, state.stage)
 }
 async function deleteProject() {
   const ok = await openConfirm('Borrar proyecto', `¿Borrar “${state.currentName}” entero? Se moverá a la papelera.`)
@@ -577,30 +611,151 @@ async function deleteProject() {
   if (res.ok) { state.projects = state.projects.filter((p) => p.dir !== state.current); showHome() }
 }
 
-// ---- Compose + iterate (event-driven, survives navigation) -----------------
+// ---- Editor: superficie única del agente (headless-first) -------------------
+// El feed muestra la conversación con el editor: mensajes del usuario, texto del
+// asistente, grupos de actividad (herramientas/comandos) y tarjetas de resultado.
+// El terminal xterm queda como vía avanzada en el menú ⋯.
 
-function setComposeUI(running) {
+function setEditorRunning(running) {
   state.composing = running
   el('composeBtn').disabled = running
-  el('iterateBtn') && (el('iterateBtn').disabled = running)
+  el('editorSend').disabled = running
+  el('editorInput').disabled = running
   el('cancelBtn').classList.toggle('hidden', !running)
   el('recHere').disabled = running
-  if (running) {
-    el('toggleLog').classList.remove('hidden')
-    el('composeLog').classList.remove('hidden')
-    el('toggleLog').textContent = '▾ Ocultar progreso'
-  }
+  const montar = document.querySelector('#pipeline [data-stage="montar"]')
+  if (montar) montar.classList.toggle('busy', running)
+  if (running) el('editorStatus').textContent = '· montando…'
 }
+
+// log crudo (accesible desde ⋯ → Ver log crudo)
 function appendComposeLog(msg) {
   const pre = el('composeLog')
   pre.textContent += (pre.textContent ? '\n' : '') + msg
   pre.scrollTop = pre.scrollHeight
 }
-function restoreComposeUI(job) {
+
+// --- feed ---
+let actGroup = null // grupo de actividad abierto (se cierra al llegar texto del asistente)
+function feedBox() { return el('editorFeed') }
+function feedShow() { feedBox().classList.remove('hidden') }
+function feedScroll() { const f = feedBox(); f.scrollTop = f.scrollHeight }
+function feedClear() { feedBox().innerHTML = ''; feedBox().classList.add('hidden'); actGroup = null }
+function feedMsg(kind, text) {
+  feedShow(); actGroup = null
+  const d = document.createElement('div')
+  d.className = 'msg ' + kind
+  d.textContent = text
+  feedBox().appendChild(d); feedScroll()
+}
+function feedActivity(line) {
+  feedShow()
+  if (!actGroup) {
+    actGroup = document.createElement('details')
+    actGroup.className = 'activity'
+    actGroup.innerHTML = '<summary><span class="spinner"></span> <span>Trabajando…</span> <span class="act-last"></span></summary><div class="act-lines"></div>'
+    feedBox().appendChild(actGroup)
+  }
+  actGroup.querySelector('.act-last').textContent = line
+  const lines = actGroup.querySelector('.act-lines')
+  lines.textContent += (lines.textContent ? '\n' : '') + line
+  feedScroll()
+}
+function feedFinishActivity() {
+  document.querySelectorAll('#editorFeed .activity .spinner').forEach((s) => s.remove())
+  actGroup = null
+}
+function feedResult(kind, text, btnLabel, btnAction) {
+  feedShow(); feedFinishActivity()
+  const d = document.createElement('div')
+  d.className = 'result-card ' + kind
+  d.innerHTML = `<span>${escapeHtml(text)}</span><span class="grow-spacer"></span>`
+  if (btnLabel) {
+    const b = document.createElement('button')
+    b.className = kind === 'ok' ? 'btn-primary mini' : 'btn-secondary mini'
+    b.textContent = btnLabel
+    b.addEventListener('click', btnAction)
+    d.appendChild(b)
+  }
+  feedBox().appendChild(d); feedScroll()
+}
+
+// enruta un evento estructurado del agente al feed
+function editorPush(ev) {
+  if (!ev) return
+  if (ev.kind === 'text') feedMsg('assistant', ev.label)
+  else if (ev.kind === 'cmd') feedActivity('$ ' + ev.label)
+  else if (ev.kind === 'tool') feedActivity('· ' + ev.label)
+  else el('editorStatus').textContent = '· ' + ev.label
+}
+
+// resumen corto de opciones para el pseudo-mensaje inicial del feed
+function optsSummary(o) {
+  const parts = [o.aspect === 'both' ? '16:9 + 9:16' : o.aspect]
+  parts.push(o.subtitles ? 'subs' : 'sin subs')
+  if (o.sfx) parts.push('SFX')
+  if (o.cropMenubar) parts.push('sin barra de menú')
+  if (o.tone) parts.push(`“${o.tone.slice(0, 40)}”`)
+  return parts.join(' · ')
+}
+
+// --- sesión (continuidad de la conversación del agente) ---
+function sessionResumeWanted() { return state.hasSession ? state.editorResume : false }
+function updateSessionChip(hasSession) {
+  state.hasSession = hasSession
+  const chip = el('sessionChip')
+  chip.classList.remove('hidden')
+  if (!hasSession) {
+    chip.textContent = 'conversación nueva'
+    chip.style.pointerEvents = 'none'
+    chip.title = ''
+    return
+  }
+  chip.style.pointerEvents = ''
+  chip.textContent = state.editorResume ? '🧠 continuará la conversación' : 'empezará de cero'
+  chip.title = 'Cambiar entre continuar la conversación anterior o empezar de cero'
+}
+
+async function startCompose() {
+  if (state.composing || !state.current) return
+  const opts = currentOpts()
+  const extraMsg = el('editorInput').value.trim()
+  if (extraMsg) { opts.tone = (opts.tone ? opts.tone + '. ' : '') + extraMsg; el('editorInput').value = '' }
+  await persistOpts()
+  feedClear()
+  el('composeLog').textContent = ''
+  feedMsg('user', `Montar vídeo (${optsSummary(opts)})`)
+  setEditorRunning(true)
+  await window.studio.composeProject(state.current, opts, sessionResumeWanted())
+}
+
+async function sendEditorMessage() {
+  if (state.composing) return
+  const fb = el('editorInput').value.trim()
+  if (!fb) { el('editorInput').focus(); return }
+  const isFinal = state.detail && (state.detail.hasFinal || state.detail.hasFinal9x16)
+  if (!isFinal) return startCompose() // sin final todavía: el mensaje entra como dirección de estilo
+  await persistOpts()
+  el('editorInput').value = ''
+  feedMsg('user', fb)
+  setEditorRunning(true)
+  await window.studio.iterateProject(state.current, fb, currentOpts(), sessionResumeWanted())
+}
+
+// Reconstruye el feed desde el estado del job (reattach tras navegar o recargar).
+// Tolera jobs antiguos que solo tienen `log` (líneas planas).
+function restoreEditor(job) {
+  feedClear()
   el('composeLog').textContent = (job.log || []).join('\n')
-  if ((job.log || []).length) el('toggleLog').classList.remove('hidden')
-  if (job.status === 'running') { setComposeUI(true); el('composeStatus').textContent = '· componiendo…' }
-  else { setComposeUI(false); el('composeStatus').textContent = job.status === 'done' ? '✓ listo' : (job.error ? '✗ ' + job.error : '') }
+  const evs = job.events && job.events.length
+    ? job.events
+    : (job.log || []).map((m) => (m.startsWith('$ ') ? { kind: 'cmd', label: m.slice(2) } : m.startsWith('· ') ? { kind: 'tool', label: m.slice(2) } : { kind: 'status', label: m }))
+  for (const ev of evs) editorPush(ev)
+  if (job.status === 'running') { setEditorRunning(true); return }
+  setEditorRunning(false)
+  if (job.status === 'done') { el('editorStatus').textContent = '✓ listo'; feedResult('ok', 'Vídeo listo', 'Ver resultado →', () => setStage('resultado')) }
+  else if (job.status === 'cancelled') { el('editorStatus').textContent = ''; feedResult('cancelled', 'Montaje cancelado') }
+  else { el('editorStatus').textContent = ''; feedResult('err', job.error || 'error') }
 }
 
 // ---- Embedded Claude Code terminal -----------------------------------------
@@ -610,9 +765,6 @@ let term = null
 let fitAddon = null
 let termResizeObs = null
 let termWired = false
-
-async function composeProject() { await openTerminal(false) }
-async function continueSession() { await openTerminal(true) }
 
 async function openTerminal(resume) {
   if (!state.current) return
@@ -663,36 +815,43 @@ function closeTerminal() {
   if (term) { try { term.dispose() } catch { /* ignore */ } term = null }
   const p = el('termPanel'); if (p) p.classList.add('hidden')
 }
-async function iterateProject() {
-  if (state.composing) return
-  const fb = el('feedbackBox').value.trim()
-  if (!fb) { el('feedbackBox').focus(); return }
-  await persistOpts()
-  el('composeLog').textContent = ''; el('composeLog').classList.remove('hidden')
-  setComposeUI(true); el('composeStatus').textContent = '· aplicando cambios…'
-  const resume = el('resumeChk') ? el('resumeChk').checked : true
-  await window.studio.iterateProject(state.current, fb, currentOpts(), resume)
-}
 async function cancelCompose() {
   await window.studio.agentCancel(state.current)
-  el('composeStatus').textContent = '· cancelando…'
+  el('editorStatus').textContent = '· cancelando…'
 }
 
 // route headless-agent events: compose (key = project dir) or scripts (key = 'style'/'script')
-window.studio.onAgentProgress(({ key, msg }) => {
-  if (key === state.current) { el('composeStatus').textContent = '· ' + msg; appendComposeLog(msg) }
-  else if (key === 'style' || key === 'script') scriptProgress(key, msg)
+window.studio.onAgentProgress(({ key, msg, ev }) => {
+  if (key === state.current) {
+    appendComposeLog(msg)
+    editorPush(ev || { kind: 'status', label: msg })
+  } else if (key === 'style' || key === 'script') scriptProgress(key, msg)
 })
 window.studio.onAgentDone(async ({ key, ok, result, error }) => {
   if (key === state.current) {
-    setComposeUI(false)
+    setEditorRunning(false)
+    feedFinishActivity()
     if (ok) {
-      el('composeStatus').textContent = '✓ listo'
-      el('feedbackBox') && (el('feedbackBox').value = '')
-      const idx = state.projects.findIndex((p) => p.dir === key); if (idx >= 0 && result && result.summary) state.projects[idx] = result.summary
-      await openProject(key)
+      el('editorStatus').textContent = '✓ listo'
+      const idx = state.projects.findIndex((p) => p.dir === key)
+      if (idx >= 0 && result && result.summary) state.projects[idx] = result.summary
+      // refresca los datos del proyecto sin resetear la etapa ni el feed
+      const d = await window.studio.projectDetail(key)
+      if (d && state.current === key) {
+        state.detail = d
+        renderDetail(d)
+        renderPipeline(d, null)
+        updateSessionChip(true)
+      }
+      feedResult('ok', 'Vídeo listo', 'Ver resultado →', () => setStage('resultado'))
+      toast('✓ Vídeo montado', 'ok')
+    } else if (error === 'cancelado') {
+      el('editorStatus').textContent = ''
+      feedResult('cancelled', 'Montaje cancelado')
     } else {
-      el('composeStatus').textContent = '✗ ' + (error || 'error')
+      el('editorStatus').textContent = ''
+      feedResult('err', '✗ ' + (error || 'error'))
+      toast('✗ El montaje falló', 'err')
     }
   } else if (key === 'style' || key === 'script') {
     scriptDone(key, ok, result, error)
@@ -1479,21 +1638,33 @@ initCropInteractions()
 el('recBtn').addEventListener('click', beginRecording)
 el('pauseBtn').addEventListener('click', pauseResume)
 el('stopBtn').addEventListener('click', () => stopRecording(true))
-el('composeBtn').addEventListener('click', composeProject)
-el('continueBtn').addEventListener('click', continueSession)
-el('termClose').addEventListener('click', closeTerminal)
-el('cancelBtn').addEventListener('click', cancelCompose)
-el('iterateBtn').addEventListener('click', iterateProject)
-el('toggleLog').addEventListener('click', () => {
-  const hidden = el('composeLog').classList.toggle('hidden')
-  el('toggleLog').textContent = hidden ? '▸ Ver progreso' : '▾ Ocultar progreso'
+
+// --- Editor (etapa Montar) ---
+on('composeBtn', 'click', startCompose)
+on('editorSend', 'click', sendEditorMessage)
+on('editorInput', 'keydown', (e) => { if (e.key === 'Enter') sendEditorMessage() })
+on('cancelBtn', 'click', cancelCompose)
+on('termClose', 'click', closeTerminal)
+on('sessionChip', 'click', () => { state.editorResume = !state.editorResume; updateSessionChip(state.hasSession) })
+on('editorAdv', 'click', (e) => { e.stopPropagation(); el('editorAdvMenu').classList.toggle('hidden') })
+document.addEventListener('click', (e) => {
+  const m = el('editorAdvMenu')
+  if (m && !m.classList.contains('hidden') && !m.contains(e.target) && e.target !== el('editorAdv')) m.classList.add('hidden')
 })
-el('toggleOpts').addEventListener('click', () => {
-  const hidden = el('optsPanel').classList.toggle('hidden')
-  el('toggleOpts').textContent = hidden ? '▸ Opciones' : '▾ Opciones'
-})
-;['optAspect', 'optSubs', 'optModel', 'optPip', 'optCrop', 'optSfx'].forEach((id) => el(id).addEventListener('change', persistOpts))
-el('optTone').addEventListener('blur', persistOpts)
+on('advTermNew', 'click', () => { el('editorAdvMenu').classList.add('hidden'); openTerminal(false) })
+on('advTermCont', 'click', () => { el('editorAdvMenu').classList.add('hidden'); openTerminal(true) })
+on('advRawLog', 'click', () => { el('editorAdvMenu').classList.add('hidden'); el('composeLog').classList.toggle('hidden') })
+
+// --- stepper del pipeline ---
+document.querySelectorAll('#pipeline .pl-step').forEach((b) => b.addEventListener('click', () => setStage(b.dataset.stage)))
+
+// --- opciones de montaje (barra siempre visible) ---
+document.querySelectorAll('#aspectSeg button').forEach((b) =>
+  b.addEventListener('click', () => { setSegActive('aspectSeg', 'aspect', b.dataset.aspect); persistOpts() }))
+document.querySelectorAll('#pipPicker button').forEach((b) =>
+  b.addEventListener('click', () => { setSegActive('pipPicker', 'pip', b.dataset.pip); persistOpts() }))
+;['optSubs', 'optModel', 'optCrop', 'optSfx'].forEach((id) => on(id, 'change', persistOpts))
+on('optTone', 'blur', persistOpts)
 el('modalOk').addEventListener('click', () => closeModal(el('modalInput').classList.contains('hidden') ? true : el('modalInput').value))
 el('modalCancel').addEventListener('click', () => closeModal(el('modalInput').classList.contains('hidden') ? false : null))
 el('modalInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') closeModal(el('modalInput').value) })
