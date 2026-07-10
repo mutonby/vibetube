@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "test",
+  "slug": "test",
+  "created": "20260710_030552",
+  "updated": "20260710_030552",
+  "audio_source": "webcam",
+  "compose_opts": {
+    "aspect": "16:9",
+    "subtitles": true,
+    "model": "medium",
+    "pip": "br",
+    "tone": "",
+    "cropMenubar": false,
+    "sfx": true
+  },
+  "clips": []
+}

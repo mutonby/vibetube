@@ -7,6 +7,13 @@ const { pathToFileURL } = require('url')
 const { spawnSync, spawn } = require('child_process')
 const { Readable } = require('stream')
 
+// Native PTY for the embedded Claude Code terminal. Rebuilt against Electron's
+// ABI (see package.json postinstall). If it can't load, the terminal falls back
+// to opening the system Terminal instead of breaking.
+let pty = null
+try { pty = require('node-pty-prebuilt-multiarch') }
+catch (e) { console.error('[pty] node-pty no cargó, la terminal usará Terminal.app:', e.message) }
+
 // The renderer is served over file:// (loadFile) and the background-blur
 // library (vendor/vb) runs its segmenter in a Web Worker loaded by URL —
 // Chromium blocks file:// workers unless this switch is set.
@@ -22,6 +29,7 @@ const MIME = {
 let mainWindow = null
 let floatWindow = null
 let tpWindow = null
+let ptyProc = null // the embedded Claude Code terminal's PTY (one at a time)
 let FFMPEG = null
 let CLAUDE = null
 
@@ -112,7 +120,7 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('will-quit', () => globalShortcut.unregisterAll())
+app.on('will-quit', () => { globalShortcut.unregisterAll(); stopTerminal() })
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
@@ -182,6 +190,76 @@ ipcMain.on('float-idle', (_e, payload) => {
 
 // from the floating bar buttons
 ipcMain.on('float-control', (_e, which) => relayControl(which))
+
+// ---- Embedded Claude Code terminal (interactive montage session) -----------
+// The "✨ Componer" button opens a REAL interactive `claude` in the project dir
+// via a PTY, streamed into an xterm panel. It starts in PLAN MODE with Opus 4.8
+// and a seed prompt: Claude proposes the montage plan, the user approves, it
+// executes, and the user can keep chatting in the SAME session afterwards.
+
+function stopTerminal() {
+  if (ptyProc) { try { ptyProc.kill() } catch { /* gone */ } ptyProc = null }
+}
+
+// Fallback when the native PTY isn't available: open the system Terminal running
+// claude. Sources avatar-muton/.env so the HeyGen key is present without copying
+// the secret into a new file.
+function openSystemTerminal(dir, claude, args) {
+  try {
+    const q = (s) => `'${String(s).replace(/'/g, "'\\''")}'`
+    const line = `cd ${q(dir)} && ${q(claude)} ${args.map(q).join(' ')}`
+    const script = '#!/bin/bash\n'
+      + 'set -a; [ -f "$HOME/Documents/avatar-muton/.env" ] && . "$HOME/Documents/avatar-muton/.env"; set +a\n'
+      + line + '\n'
+    const f = path.join(app.getPath('temp'), `rs-terminal-${stamp()}.command`)
+    fs.writeFileSync(f, script, { mode: 0o755 })
+    shell.openPath(f)
+    return true
+  } catch (e) { console.error('[terminal] fallback Terminal falló:', e.message); return false }
+}
+
+function startTerminal({ dir, resume, opts, cols, rows } = {}) {
+  const claude = claudePath()
+  if (!claude) return { ok: false, error: 'No encuentro la CLI `claude` (Claude Code) en el PATH.' }
+  if (!dir) return { ok: false, error: 'proyecto sin carpeta' }
+  ensureProjectClaudeMd(dir, opts)
+  stopTerminal()
+
+  const seed = [
+    'Eres el editor de este proyecto record-studio; sigue el CLAUDE.md de esta carpeta.',
+    'Primero transcribe e inspecciona los clips y ENSÉÑAME EL PLAN de montaje (planos, gráficos,',
+    'SFX/música, subtítulos por formato). Cuando lo apruebe, ejecútalo y genera edit/final.mp4',
+    '(16:9, con .srt al lado) y edit/final_9x16.mp4 (9:16, subtítulos quemados). Habla en español.',
+  ].join(' ')
+  // Fresh compose → plan mode + seed. Continue → resume the SAME conversation.
+  const args = resume
+    ? ['--continue', '--model', 'opus']
+    : [seed, '--model', 'opus', '--permission-mode', 'plan']
+  const env = { ...process.env, ...heygenEnv(), TERM: 'xterm-256color', FORCE_COLOR: '1' }
+
+  if (!pty) {
+    const ok = openSystemTerminal(dir, claude, args)
+    return { ok, fallback: 'system-terminal', error: ok ? null : 'no pude abrir Terminal' }
+  }
+  try {
+    ptyProc = pty.spawn(claude, args, {
+      name: 'xterm-256color', cols: cols || 100, rows: rows || 30, cwd: dir, env,
+    })
+  } catch (e) { return { ok: false, error: e.message } }
+  ptyProc.onData((d) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('terminal-data', d) })
+  ptyProc.onExit(({ exitCode }) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('terminal-exit', exitCode)
+    ptyProc = null
+  })
+  return { ok: true }
+}
+
+ipcMain.handle('terminal-start', (_e, payload) => startTerminal(payload || {}))
+ipcMain.on('terminal-input', (_e, data) => { if (ptyProc) try { ptyProc.write(data) } catch { /* gone */ } })
+ipcMain.on('terminal-resize', (_e, { cols, rows } = {}) => {
+  if (ptyProc) try { ptyProc.resize(Math.max(2, cols | 0), Math.max(2, rows | 0)) } catch { /* gone */ }
+})
+ipcMain.on('terminal-kill', () => stopTerminal())
 
 // ---- Teleprompter window (content-protected, near the camera) --------------
 
@@ -470,6 +548,54 @@ function composePrompt(opts) {
     'pick sensible defaults and proceed. Keep going until BOTH `edit/final.mp4` and',
     '`edit/final_9x16.mp4` exist.',
   ].join('\n')
+}
+
+// The montage brief written as the project's CLAUDE.md, so the INTERACTIVE
+// terminal session auto-loads it and "knows everything" about how to edit this
+// record-studio project. Reuses optsLines() (the same knobs as headless compose).
+// The video-use SKILL.md (globally linked) carries the full craft; this file is
+// the project-specific orchestration on top of it.
+function montageBrief(opts) {
+  return [
+    '# Montar el vídeo de este proyecto (record-studio)',
+    '',
+    'Eres el **editor de vídeo** de este proyecto. Usa la skill **video-use** para montar los clips',
+    'grabados en el vídeo final. Sigue el CRAFT completo de `video-use/SKILL.md` (continuidad multicam,',
+    'zoom, crossfades, cámara variada, gráficos sincronizados a las palabras, SFX/música de HeyGen,',
+    'subtítulos por formato) — aquí va SOLO lo específico de este proyecto.',
+    '',
+    'ESTRUCTURA: los clips están en `clips/clip_NN/` y cada uno tiene dos pistas SINCRONIZADAS en una',
+    'misma línea de tiempo: `screen.webm` (sin audio) y `webcam.webm` (lleva el micro — el único audio).',
+    '`sync.json` tiene `offset_ms`. Usa el modo MULTICAM de la skill (layouts `fullcam`/`fullscreen`/',
+    '`pip`/`graphic` en la EDL, renderizando con `helpers/render.py`).',
+    '',
+    'OBJETIVO: generar SIEMPRE **`edit/final.mp4`** (16:9, 1920x1080, YouTube) y **`edit/final_9x16.mp4`**',
+    '(9:16, 1080x1920, Shorts/Reels). Mismo montaje, dos lienzos (renderiza dos veces con distinto `output`).',
+    '',
+    'OPCIONES DE ESTE PROYECTO:',
+    ...optsLines(opts),
+    '',
+    'ESTILO (resumen — el detalle está en video-use/SKILL.md):',
+    '- Montaje SUAVE, no choppy: cámara en PiP sobre la pantalla, **zoom lento siempre**, **crossfades**',
+    '  entre planos (corte duro solo en cambios de bloque). Varía la posición/tamaño del PiP.',
+    '- Gráficos HyperFrames que **cubren toda su narración** y con elementos animados **a la palabra**',
+    '  (word-timestamps de Whisper). Primer gráfico en los ~5s.',
+    '- SFX/música **nuevos por vídeo** de la librería de HeyGen, colocados en la palabra exacta.',
+    '- Subtítulos: 16:9 → `.srt` al lado (NO quemados); 9:16 → quemados estilo Hormozi (overlay de',
+    '  HyperFrames sincronizado a palabras, arriba, sobre la cámara).',
+    '',
+    'La `HEYGEN_API_KEY` (y `HEYGEN_API_BASE`) están en tu ENTORNO — úsalas para buscar/descargar sonidos.',
+    'Todo en ESPAÑOL con el usuario.',
+  ].join('\n')
+}
+
+// Write/refresh the project CLAUDE.md so the interactive session loads the brief.
+function ensureProjectClaudeMd(dir, opts) {
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), montageBrief(opts) + '\n')
+    return true
+  } catch (e) { console.error('[terminal] no pude escribir CLAUDE.md:', e.message); return false }
 }
 
 function iteratePrompt(feedback, opts) {

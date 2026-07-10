@@ -5,6 +5,21 @@
 // ----------------------------------------------------------------------------
 
 const el = (id) => document.getElementById(id)
+// Tolerant wiring: a missing id logs instead of crashing the whole renderer.
+const on = (id, ev, fn) => { const n = el(id); if (n) n.addEventListener(ev, fn); else console.warn('[wire] id ausente:', id) }
+// Inline SVG icon from the sprite in index.html.
+const icon = (name, cls = 'icon') => `<svg class="${cls}"><use href="#i-${name}"/></svg>`
+
+// Transient feedback toasts (bottom-center, auto-dismiss).
+function toast(msg, kind = 'ok', ms = 3500) {
+  const host = el('toastHost')
+  if (!host) return
+  const t = document.createElement('div')
+  t.className = 'toast ' + kind
+  t.textContent = msg
+  host.appendChild(t)
+  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .25s'; setTimeout(() => t.remove(), 260) }, ms)
+}
 
 // Surface any uncaught error/rejection (forwarded to the terminal by main.js and
 // shown in the in-app log) so recording bugs while the window is hidden aren't silent.
@@ -92,6 +107,7 @@ function setCrumb(text) { el('crumb').textContent = text || '' }
 // ---- View navigation -------------------------------------------------------
 
 function hideAll() {
+  if (typeof closeTerminal === 'function') closeTerminal() // end any montage terminal when navigating away
   el('viewHome').classList.add('hidden')
   el('viewProject').classList.add('hidden')
   el('viewRecord').classList.add('hidden')
@@ -146,7 +162,7 @@ function tpPayload(text) {
   }
 }
 function updateTpToggle() {
-  el('tpToggle').textContent = state.tpVisible ? '📜 Ocultar teleprompter' : '📜 Mostrar teleprompter'
+  el('tpToggleLbl').textContent = state.tpVisible ? 'Ocultar teleprompter' : 'Mostrar teleprompter'
 }
 function toggleTeleprompter() {
   if (state.tpVisible) { window.studio.hideTeleprompter(); state.tpVisible = false }
@@ -177,8 +193,8 @@ async function renderRecClips() {
     const card = document.createElement('div'); card.className = 'rec-clip'
     const thumb = c.thumbDataUrl ? `style="background-image:url('${c.thumbDataUrl}')"` : ''
     card.innerHTML = `
-      <div class="rc-thumb" ${thumb}><button class="rc-play" title="reproducir">▶</button></div>
-      <div class="rc-row"><span>Clip ${i + 1} · ${fmtDur(c.durationMs)}</span><button class="rc-del danger" title="borrar">🗑</button></div>`
+      <div class="rc-thumb" ${thumb}><button class="rc-play" title="reproducir">${icon('play', 'icon icon-sm')}</button></div>
+      <div class="rc-row"><span>Clip ${i + 1} · ${fmtDur(c.durationMs)}</span><button class="rc-del danger" title="borrar">${icon('trash', 'icon icon-sm')}</button></div>`
     card.querySelector('.rc-play').addEventListener('click', () => openVideo(`rsmedia://media/${encodeURIComponent(c.webcamPath)}`))
     card.querySelector('.rc-del').addEventListener('click', async () => {
       const ok = await openConfirm('Borrar clip', `¿Borrar el Clip ${i + 1}? Se moverá a la papelera.`)
@@ -380,7 +396,7 @@ function renderGallery() {
   const grid = el('projectsGrid'); grid.innerHTML = ''
   const addCard = document.createElement('div')
   addCard.className = 'project-card new-card'
-  addCard.innerHTML = '<div class="poster add">＋</div><div class="info"><div class="pname">Nuevo proyecto</div><div class="meta">graba clips nuevos</div></div>'
+  addCard.innerHTML = `<div class="poster add">${icon('plus', 'icon icon-lg')}</div><div class="info"><div class="pname">Nuevo proyecto</div><div class="meta">graba clips nuevos</div></div>`
   addCard.addEventListener('click', () => el('newName').focus())
   grid.appendChild(addCard)
   for (const p of state.projects) {
@@ -444,7 +460,7 @@ function renderDetail(d) {
     const src = `rsmedia://media/${encodeURIComponent(d.finalPath)}`
     finalArea.innerHTML = `
       <video class="final-video" controls playsinline ${d.previewDataUrl ? `poster="${d.previewDataUrl}"` : ''} src="${src}"></video>
-      <div class="final-actions"><button id="openFinal" class="ghost">⤢ Abrir en reproductor</button></div>`
+      <div class="final-actions"><button id="openFinal" class="ghost">${icon('external')} Abrir en reproductor</button></div>`
     finalArea.querySelector('#openFinal').addEventListener('click', () => window.studio.openPath(d.finalPath))
     el('iterateBlock').classList.remove('hidden')
   } else {
@@ -463,13 +479,13 @@ function renderDetail(d) {
       card.className = 'clip-card'
       const thumbStyle = c.thumbDataUrl ? `style="background-image:url('${c.thumbDataUrl}')"` : ''
       card.innerHTML = `
-        <div class="clip-thumb" ${thumbStyle}><button class="clip-play" title="reproducir">▶</button></div>
+        <div class="clip-thumb" ${thumbStyle}><button class="clip-play" title="reproducir">${icon('play', 'icon icon-sm')}</button></div>
         <div class="clip-row">
           <span class="clip-meta">Clip ${i + 1} · ${fmtDur(c.durationMs)}</span>
           <span class="clip-btns">
-            <button data-a="up" title="subir" ${i === 0 ? 'disabled' : ''}>▲</button>
-            <button data-a="down" title="bajar" ${i === d.clips.length - 1 ? 'disabled' : ''}>▼</button>
-            <button data-a="del" class="danger" title="borrar">🗑</button>
+            <button data-a="up" title="subir" ${i === 0 ? 'disabled' : ''}>${icon('chevron-up', 'icon icon-sm')}</button>
+            <button data-a="down" title="bajar" ${i === d.clips.length - 1 ? 'disabled' : ''}>${icon('chevron-down', 'icon icon-sm')}</button>
+            <button data-a="del" class="danger" title="borrar">${icon('trash', 'icon icon-sm')}</button>
           </span>
         </div>`
       card.querySelector('.clip-play').addEventListener('click', () => openVideo(`rsmedia://media/${encodeURIComponent(c.webcamPath)}`))
@@ -551,12 +567,65 @@ function restoreComposeUI(job) {
   else { setComposeUI(false); el('composeStatus').textContent = job.status === 'done' ? '✓ listo' : (job.error ? '✗ ' + job.error : '') }
 }
 
-async function composeProject() {
-  if (state.composing) return
+// ---- Embedded Claude Code terminal -----------------------------------------
+// "✨ Componer" opens a REAL interactive claude in an xterm panel (Opus 4.8, plan
+// mode, seeded). The user watches it plan+execute and can keep chatting after.
+let term = null
+let fitAddon = null
+let termResizeObs = null
+let termWired = false
+
+async function composeProject() { await openTerminal(false) }
+async function continueSession() { await openTerminal(true) }
+
+async function openTerminal(resume) {
+  if (!state.current) return
+  if (typeof window.Terminal !== 'function') { log('xterm no cargó', 'err'); return }
   await persistOpts()
-  el('composeLog').textContent = ''
-  setComposeUI(true); el('composeStatus').textContent = '· lanzando…'
-  await window.studio.composeProject(state.current, currentOpts())
+  el('termPanel').classList.remove('hidden')
+  el('termProj').textContent = state.currentName || ''
+  el('termStatus').textContent = '· iniciando…'
+
+  if (term) { try { term.dispose() } catch { /* ignore */ } term = null }
+  term = new window.Terminal({
+    fontFamily: 'Menlo, Monaco, "SF Mono", monospace', fontSize: 13, cursorBlink: true,
+    scrollback: 8000, theme: { background: '#0c0c12', foreground: '#e6e6ee' },
+  })
+  fitAddon = new window.FitAddon.FitAddon()
+  term.loadAddon(fitAddon)
+  term.open(el('term'))
+  try { fitAddon.fit() } catch { /* not laid out yet */ }
+  term.focus()
+  term.onData((d) => window.studio.terminal.sendInput(d))
+
+  // pty → term: attach the IPC listeners ONCE; they reference the latest `term`.
+  if (!termWired) {
+    window.studio.terminal.onData((d) => { if (term) term.write(d) })
+    window.studio.terminal.onExit((code) => { el('termStatus').textContent = `· sesión terminada (código ${code})` })
+    termWired = true
+  }
+
+  if (termResizeObs) termResizeObs.disconnect()
+  termResizeObs = new ResizeObserver(() => {
+    try { fitAddon.fit(); window.studio.terminal.resize(term.cols, term.rows) } catch { /* ignore */ }
+  })
+  termResizeObs.observe(el('term'))
+
+  const res = await window.studio.terminal.start({ dir: state.current, resume, opts: currentOpts(), cols: term.cols, rows: term.rows })
+  if (!res || !res.ok) {
+    if (res && res.fallback === 'system-terminal') el('termStatus').textContent = '· abierto en la Terminal del sistema (PTY embebido no disponible)'
+    else el('termStatus').textContent = '· error: ' + ((res && res.error) || 'no arrancó')
+    return
+  }
+  el('termStatus').textContent = resume ? '· continuando la conversación…' : '· Opus 4.8 · modo plan — te propondrá el montaje'
+  try { window.studio.terminal.resize(term.cols, term.rows) } catch { /* ignore */ }
+}
+
+function closeTerminal() {
+  try { window.studio.terminal.kill() } catch { /* ignore */ }
+  if (termResizeObs) { termResizeObs.disconnect(); termResizeObs = null }
+  if (term) { try { term.dispose() } catch { /* ignore */ } term = null }
+  const p = el('termPanel'); if (p) p.classList.add('hidden')
 }
 async function iterateProject() {
   if (state.composing) return
@@ -607,7 +676,7 @@ function renderSources() {
     const card = document.createElement('div')
     const sel = s.id === state.selectedSourceId
     card.className = 'source-card' + (sel ? ' selected' : '') + (s.isApp ? ' is-app' : '')
-    const kind = s.kind === 'screen' ? '🖥 pantalla' : '🪟 ventana'
+    const kind = s.kind === 'screen' ? `${icon('screen', 'icon icon-sm')} pantalla` : `${icon('window', 'icon icon-sm')} ventana`
     const meta = s.detail ? `<span class="src-detail">${escapeHtml(s.detail)}</span>` : ''
     card.innerHTML = `<img src="${s.thumbnail}" alt="" />
       ${sel ? '<span class="src-live">● GRABANDO ESTO</span>' : ''}
@@ -627,7 +696,7 @@ function updateScreenCaption() {
   const s = state.sources.find((x) => x.id === state.selectedSourceId)
   if (!s) { cap.textContent = 'Pantalla — elige una fuente arriba'; return }
   const extra = s.detail ? ` · ${s.detail}` : ''
-  cap.textContent = `${s.kind === 'screen' ? '🖥' : '🪟'} ${s.name}${extra}`
+  cap.textContent = `${s.kind === 'screen' ? 'Pantalla' : 'Ventana'} · ${s.name}${extra}`
 }
 async function selectSource(id) {
   if (state.recording) return
@@ -1177,7 +1246,7 @@ function startRecording(fromFloat = false) {
 
   state.recording = true; state.paused = false; state.pausedTotal = 0; state.tStart = performance.now()
   setStatus('grabando', 'recording')
-  el('pauseBtn').disabled = false; el('pauseBtn').textContent = '⏸ Pausar'; el('pauseBtn').className = 'pause'
+  el('pauseBtn').disabled = false; el('pauseBtn').textContent = 'Pausar'; el('pauseBtn').className = 'pause'
   el('stopBtn').disabled = false; el('recHint').textContent = ''
   log('● grabando…')
   if (!fromFloat) window.studio.recordingStarted({ camId: state.camId, blur: state.blur, blurLevel: state.blurLevel, bg: state.bgData ? state.bgData.dataUrl : null, crop: state.crop, cropRect: state.crop ? state.cropRect : null }) // hide window + self-view bar + shortcuts
@@ -1189,11 +1258,11 @@ function pauseResume() {
   if (!state.paused) {
     state.recorders.forEach((r) => r.state === 'recording' && r.pause())
     state.paused = true; state.pauseStart = performance.now()
-    setStatus('pausado'); el('pauseBtn').textContent = '▶ Seguir'; el('pauseBtn').className = 'pause resume'; log('⏸ pausado')
+    setStatus('pausado'); el('pauseBtn').textContent = 'Seguir'; el('pauseBtn').className = 'pause resume'; log('⏸ pausado')
   } else {
     state.pausedTotal += performance.now() - state.pauseStart
     state.recorders.forEach((r) => r.state === 'paused' && r.resume())
-    state.paused = false; setStatus('grabando', 'recording'); el('pauseBtn').textContent = '⏸ Pausar'; el('pauseBtn').className = 'pause'; log('▶ seguir')
+    state.paused = false; setStatus('grabando', 'recording'); el('pauseBtn').textContent = 'Pausar'; el('pauseBtn').className = 'pause'; log('▶ seguir')
   }
 }
 function elapsedMs() {
@@ -1375,6 +1444,8 @@ el('recBtn').addEventListener('click', beginRecording)
 el('pauseBtn').addEventListener('click', pauseResume)
 el('stopBtn').addEventListener('click', () => stopRecording(true))
 el('composeBtn').addEventListener('click', composeProject)
+el('continueBtn').addEventListener('click', continueSession)
+el('termClose').addEventListener('click', closeTerminal)
 el('cancelBtn').addEventListener('click', cancelCompose)
 el('iterateBtn').addEventListener('click', iterateProject)
 el('toggleLog').addEventListener('click', () => {

@@ -5,14 +5,50 @@
     <meta http-equiv="Content-Security-Policy"
           content="default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: mediastream: rsmedia:; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' blob: data:; style-src 'self' 'unsafe-inline';" />
     <title>Record Studio</title>
+    <link rel="stylesheet" href="vendor/xterm/xterm.css" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    <!-- Sprite de iconos (estilo lucide, currentColor) -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+      <defs>
+        <symbol id="i-video" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m16 13 5.2 3.03A.5.5 0 0 0 22 15.6V8.4a.5.5 0 0 0-.77-.42L16 11"/><rect x="2" y="6" width="14" height="12" rx="2"/></g></symbol>
+        <symbol id="i-file-text" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h6M16 13H8M16 17H8"/></g></symbol>
+        <symbol id="i-folder" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></g></symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5v14"/></g></symbol>
+        <symbol id="i-record" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="5" fill="currentColor"/></symbol>
+        <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13a.6.6 0 0 0 .9.5l10.4-6.5a.6.6 0 0 0 0-1L8.9 5a.6.6 0 0 0-.9.5Z" fill="currentColor"/></symbol>
+        <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1" fill="currentColor"/><rect x="14" y="4" width="4" height="16" rx="1" fill="currentColor"/></symbol>
+        <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></symbol>
+        <symbol id="i-trash" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></g></symbol>
+        <symbol id="i-sparkle" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9Z"/><path d="M19 3v3M20.5 4.5h-3M5 18v3M6.5 19.5h-3"/></g></symbol>
+        <symbol id="i-chat" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8Z"/></g></symbol>
+        <symbol id="i-sliders" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h4M10 8h4M18 16h4"/></g></symbol>
+        <symbol id="i-chevron-down" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></g></symbol>
+        <symbol id="i-chevron-up" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></g></symbol>
+        <symbol id="i-arrow-left" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></g></symbol>
+        <symbol id="i-mic" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/></g></symbol>
+        <symbol id="i-screen" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></g></symbol>
+        <symbol id="i-window" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 9h20"/></g></symbol>
+        <symbol id="i-refresh" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></g></symbol>
+        <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></g></symbol>
+        <symbol id="i-pencil" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></g></symbol>
+        <symbol id="i-x" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></g></symbol>
+        <symbol id="i-check" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></g></symbol>
+        <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></g></symbol>
+        <symbol id="i-save" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></g></symbol>
+        <symbol id="i-external" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6M10 14 21 3"/></g></symbol>
+        <symbol id="i-terminal" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m4 17 6-6-6-6M12 19h8"/></g></symbol>
+        <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/></symbol>
+        <symbol id="i-image" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></g></symbol>
+      </defs>
+    </svg>
+
     <header class="topbar">
       <div class="brand"><span class="dot"></span> RECORD&nbsp;STUDIO</div>
       <nav class="topnav">
-        <button id="navProjects" class="topnav-btn active">🎬 Proyectos</button>
-        <button id="navScripts" class="topnav-btn">📝 Guiones</button>
+        <button id="navProjects" class="topnav-btn active"><svg class="icon"><use href="#i-video"/></svg> Proyectos</button>
+        <button id="navScripts" class="topnav-btn"><svg class="icon"><use href="#i-file-text"/></svg> Guiones</button>
       </nav>
       <div id="crumb" class="crumb"></div>
       <div class="topbar-right">
@@ -34,7 +70,7 @@
             <div class="step3"><span class="n">2</span><b>Monta</b>Claude edita el vídeo</div>
             <div class="step3"><span class="n">3</span><b>Comparte</b>listo para publicar</div>
           </div>
-          <button id="onbChoose" class="btn-primary big">📁 Elegir carpeta para empezar</button>
+          <button id="onbChoose" class="btn-primary big"><svg class="icon"><use href="#i-folder"/></svg> Elegir carpeta para empezar</button>
           <p class="hero-foot">Tus proyectos se guardarán en esa carpeta.</p>
         </div>
       </section>
@@ -46,12 +82,12 @@
           <div class="root-row">
             <span class="lbl">Guardando en:</span>
             <span id="rootPath" class="proj-path">—</span>
-            <button id="chooseRoot" class="btn-secondary">📁 Cambiar…</button>
+            <button id="chooseRoot" class="btn-secondary"><svg class="icon"><use href="#i-folder"/></svg> Cambiar…</button>
           </div>
         </div>
         <div class="new-proj">
           <input id="newName" type="text" placeholder="Nombre del nuevo vídeo… (p.ej. “Tutorial de mi app”)" />
-          <button id="createProj" class="btn-primary">＋ Crear y grabar</button>
+          <button id="createProj" class="btn-primary"><svg class="icon"><use href="#i-plus"/></svg> Crear y grabar</button>
         </div>
         <div id="projectsGrid" class="projects-grid">
           <div class="empty">Aún no hay proyectos. Escribe un nombre arriba y pulsa “Crear y grabar”.</div>
@@ -64,15 +100,15 @@
       <section class="panel">
         <div class="panel-head">
           <div class="head-left">
-            <button id="backHome" class="btn-tertiary">← Proyectos</button>
+            <button id="backHome" class="btn-tertiary"><svg class="icon"><use href="#i-arrow-left"/></svg> Proyectos</button>
             <h2 id="detailName">Proyecto</h2>
             <span id="detailBadge" class="badge draft">borrador</span>
           </div>
           <div class="head-actions">
-            <button id="recHere" class="btn-rec">● Grabar clip</button>
-            <button id="renameProj" class="btn-secondary">✎ Renombrar</button>
-            <button id="openFolder" class="btn-secondary">📁 Carpeta</button>
-            <button id="deleteProj" class="btn-secondary danger">🗑 Borrar</button>
+            <button id="recHere" class="btn-rec"><svg class="icon"><use href="#i-record"/></svg> Grabar clip</button>
+            <button id="renameProj" class="btn-secondary"><svg class="icon"><use href="#i-pencil"/></svg> Renombrar</button>
+            <button id="openFolder" class="btn-secondary"><svg class="icon"><use href="#i-folder"/></svg> Carpeta</button>
+            <button id="deleteProj" class="btn-secondary danger"><svg class="icon"><use href="#i-trash"/></svg> Borrar</button>
           </div>
         </div>
 
@@ -80,7 +116,7 @@
           <!-- ① Clips -->
           <section class="card">
             <div class="card-head">
-              <h3 id="clipsTitle">① Clips</h3>
+              <h3 id="clipsTitle">Clips</h3>
               <span class="card-help">El material en bruto. Graba uno o varios clips.</span>
             </div>
             <div id="clipsGrid" class="clips-grid"></div>
@@ -89,15 +125,25 @@
           <!-- ② Montar -->
           <section class="card">
             <div class="card-head">
-              <h3>② Montar el vídeo</h3>
+              <h3>Montar el vídeo</h3>
               <span class="card-help">Claude Code edita tus clips con la skill video-use (transcribe con Whisper local, elige planos, subtítulos).</span>
             </div>
             <div class="compose-actions">
-              <button id="composeBtn" class="btn-primary big">✨ Componer vídeo</button>
-              <button id="cancelBtn" class="btn-secondary danger hidden">✕ Cancelar</button>
+              <button id="composeBtn" class="btn-primary big"><svg class="icon"><use href="#i-sparkle"/></svg> Componer vídeo</button>
+              <button id="continueBtn" class="btn-secondary"><svg class="icon"><use href="#i-chat"/></svg> Continuar sesión</button>
+              <button id="cancelBtn" class="btn-secondary danger hidden"><svg class="icon"><use href="#i-x"/></svg> Cancelar</button>
               <button id="toggleOpts" class="btn-tertiary">▸ Opciones</button>
               <button id="toggleLog" class="btn-tertiary hidden">▸ Ver progreso</button>
               <span id="composeStatus" class="compose-status"></span>
+            </div>
+            <p class="panel-help">Al pulsar <b>Componer</b> se abre Claude Code aquí: te propone el plan de montaje, lo apruebas (Opus 4.8, modo plan) y lo ejecuta en vivo. Luego puedes seguir pidiéndole cambios en la misma sesión.</p>
+            <div id="termPanel" class="term-panel hidden">
+              <div class="term-head">
+                <span class="term-title"><svg class="icon"><use href="#i-terminal"/></svg> Claude Code — <span id="termProj"></span></span>
+                <span id="termStatus" class="term-status"></span>
+                <button id="termClose" class="btn-tertiary"><svg class="icon"><use href="#i-x"/></svg> Cerrar</button>
+              </div>
+              <div id="term" class="term-body"></div>
             </div>
             <div id="optsPanel" class="opts-panel hidden">
               <div class="opts">
@@ -126,8 +172,8 @@
                   </select>
                 </label>
               </div>
-              <label class="blur-toggle opt-check"><input type="checkbox" id="optCrop" /> 🚫 Quitar barra de menú de macOS (recorte superior)</label>
-              <label class="blur-toggle opt-check"><input type="checkbox" id="optSfx" /> 🔊 Añadir efectos de sonido (SFX) timados</label>
+              <label class="blur-toggle opt-check switch"><input type="checkbox" id="optCrop" /> Quitar barra de menú de macOS (recorte superior)</label>
+              <label class="blur-toggle opt-check switch"><input type="checkbox" id="optSfx" /> Añadir efectos de sonido (SFX) timados</label>
               <input id="optTone" class="tone" placeholder="Indicaciones de estilo (opcional): “dinámico, cortes rápidos, energía alta”…" />
             </div>
             <pre id="composeLog" class="compose-log hidden"></pre>
@@ -136,17 +182,17 @@
           <!-- ③ Resultado -->
           <section class="card">
             <div class="card-head">
-              <h3>③ Resultado</h3>
+              <h3>Resultado</h3>
               <span class="card-help">Tu vídeo final, listo para publicar.</span>
             </div>
             <div id="finalArea" class="final-area">
-              <div class="empty">Aún no hay vídeo final. Graba algún clip y pulsa <b>✨ Componer vídeo</b>.</div>
+              <div class="empty">Aún no hay vídeo final. Graba algún clip y pulsa <b>Componer vídeo</b>.</div>
             </div>
             <div id="iterateBlock" class="iterate hidden">
               <input id="feedbackBox" placeholder="¿Algún cambio? “más planos de cara”, “ponlo vertical”, “cortes más rápidos”…" />
-              <button id="iterateBtn" class="btn-primary">↻ Aplicar cambios</button>
-              <label class="blur-toggle resume-toggle" id="resumeRow">
-                <input type="checkbox" id="resumeChk" checked /> 🧠 Continuar la conversación (recuerda los cambios anteriores)
+              <button id="iterateBtn" class="btn-primary"><svg class="icon"><use href="#i-refresh"/></svg> Aplicar cambios</button>
+              <label class="blur-toggle resume-toggle switch" id="resumeRow">
+                <input type="checkbox" id="resumeChk" checked /> Continuar la conversación (recuerda los cambios anteriores)
               </label>
             </div>
           </section>
@@ -159,7 +205,7 @@
       <section class="panel sources">
         <div class="panel-head">
           <h2>① Elige qué grabar</h2>
-          <button id="refreshSources" class="btn-tertiary">↻ Actualizar</button>
+          <button id="refreshSources" class="btn-tertiary"><svg class="icon"><use href="#i-refresh"/></svg> Actualizar</button>
         </div>
         <p class="panel-help">Tu pantalla completa o una ventana concreta.</p>
         <div id="sourcesGrid" class="sources-grid">
@@ -170,7 +216,7 @@
       <section class="panel stage">
         <div class="panel-head">
           <div class="head-left">
-            <button id="backProject" class="btn-tertiary">← Proyecto</button>
+            <button id="backProject" class="btn-tertiary"><svg class="icon"><use href="#i-arrow-left"/></svg> Proyecto</button>
             <h2 id="recProjName">Grabar</h2>
             <span id="clipCount" class="chip">0 clips</span>
           </div>
@@ -181,33 +227,35 @@
           <div class="devices">
             <label>Cámara <select id="camSelect"></select></label>
             <label>Micrófono <select id="micSelect"></select></label>
-            <label class="blur-toggle"><input type="checkbox" id="blurToggle" /> 🌫 Difuminar fondo</label>
+            <label class="blur-toggle switch"><input type="checkbox" id="blurToggle" /> Difuminar fondo</label>
             <label class="blur-toggle blur-level" id="blurLevelRow" style="display:none">
               Intensidad
               <input type="range" id="blurLevel" min="0" max="100" value="50" />
             </label>
             <span class="blur-toggle bg-row" id="bgRow" style="display:none">
-              🖼 Fondo
+              Fondo
               <select id="bgSelect"><option value="">— ninguno (blur) —</option></select>
               <button id="bgPick" class="mini" type="button" title="Elegir una imagen tuya">…</button>
               <span id="bgName" class="bg-name"></span>
-              <button id="bgClear" class="mini" type="button" style="display:none" title="Quitar fondo">✕</button>
+              <button id="bgClear" class="mini" type="button" style="display:none" title="Quitar fondo"><svg class="icon icon-sm"><use href="#i-x"/></svg></button>
             </span>
-            <label class="blur-toggle"><input type="checkbox" id="cropToggle" /> ✂️ Recortar cámara</label>
+            <label class="blur-toggle switch"><input type="checkbox" id="cropToggle" /> Recortar cámara</label>
             <span class="blur-toggle crop-tools" id="cropTools" style="display:none">
               Proporción
-              <button class="mini ar-btn" data-ar="free" type="button">Libre</button>
-              <button class="mini ar-btn" data-ar="1" type="button">1:1</button>
-              <button class="mini ar-btn" data-ar="0.8" type="button">4:5</button>
-              <button class="mini ar-btn" data-ar="0.5625" type="button">9:16</button>
+              <span class="segmented">
+                <button class="mini ar-btn" data-ar="free" type="button">Libre</button>
+                <button class="mini ar-btn" data-ar="1" type="button">1:1</button>
+                <button class="mini ar-btn" data-ar="0.8" type="button">4:5</button>
+                <button class="mini ar-btn" data-ar="0.5625" type="button">9:16</button>
+              </span>
               <button class="mini" id="cropReset" type="button" title="Recuadro completo">Reiniciar</button>
             </span>
           </div>
           <div class="meter-row">
             <span class="meter-lbl">Nivel de micro</span>
             <div class="meter"><div id="meterFill" class="meter-fill"></div></div>
-            <label class="blur-toggle" title="Mezcla el sonido del sistema (YouTube, música, apps…) con tu voz en una sola pista">
-              <input type="checkbox" id="sysAudioToggle" /> 🔊 Grabar sonido del sistema
+            <label class="blur-toggle switch" title="Mezcla el sonido del sistema (YouTube, música, apps…) con tu voz en una sola pista">
+              <input type="checkbox" id="sysAudioToggle" /> Grabar sonido del sistema
             </label>
           </div>
 
@@ -234,9 +282,9 @@
           <div class="controls">
             <div id="recHint" class="hint">Elige una pantalla arriba para poder grabar.</div>
             <div class="rec-controls">
-              <button id="recBtn" class="btn-rec big" disabled>● Grabar</button>
-              <button id="pauseBtn" class="pause" disabled>⏸ Pausar</button>
-              <button id="stopBtn" class="stop" disabled>■ Parar</button>
+              <button id="recBtn" class="btn-rec big" disabled><svg class="icon"><use href="#i-record"/></svg> Grabar</button>
+              <button id="pauseBtn" class="pause" disabled>Pausar</button>
+              <button id="stopBtn" class="stop" disabled><svg class="icon"><use href="#i-stop"/></svg> Parar</button>
             </div>
           </div>
           <p class="panel-help">Al grabar, la ventana se oculta y verás una mini-cámara abajo a la derecha. Atajos: ⌘⇧1 pausar · ⌘⇧2 parar.</p>
@@ -247,8 +295,8 @@
           </div>
 
           <div class="tp-row">
-            <button id="tpToggle" class="btn-secondary">📜 Mostrar teleprompter</button>
-            <button id="tpEdit" class="btn-tertiary">✎ Editar texto</button>
+            <button id="tpToggle" class="btn-secondary"><svg class="icon"><use href="#i-file-text"/></svg> <span id="tpToggleLbl">Mostrar teleprompter</span></button>
+            <button id="tpEdit" class="btn-tertiary"><svg class="icon"><use href="#i-pencil"/></svg> Editar texto</button>
             <span class="hint">El teleprompter sale cerca de la cámara y no se graba.</span>
           </div>
           <div id="tpEditor" class="tp-editor hidden">
@@ -275,12 +323,12 @@
             <div class="card-head"><h3>① Mi estilo</h3><span class="card-help">Analizo tu canal de YouTube (solo vídeos largos, no Shorts) para aprender tu voz. Se guarda y no hay que repetirlo.</span></div>
             <div class="row">
               <input id="channelUrl" class="grow" placeholder="URL de tu canal de YouTube (https://youtube.com/@tu_canal)" />
-              <button id="analyzeBtn" class="btn-primary">🔎 Analizar mi canal</button>
+              <button id="analyzeBtn" class="btn-primary"><svg class="icon"><use href="#i-search"/></svg> Analizar mi canal</button>
             </div>
             <div class="row2">
               <span id="profileStatus" class="profile-status">Sin perfil todavía.</span>
               <button id="toggleScriptLog" class="btn-tertiary mini hidden">▸ Ver progreso</button>
-              <button id="cancelScriptBtn" class="btn-secondary danger mini hidden">✕ Cancelar</button>
+              <button id="cancelScriptBtn" class="btn-secondary danger mini hidden"><svg class="icon icon-sm"><use href="#i-x"/></svg> Cancelar</button>
             </div>
             <pre id="scriptLog" class="compose-log hidden"></pre>
           </section>
@@ -295,7 +343,7 @@
               <label class="mini-opt">Formato
                 <select id="scrFormat"><option value="">—</option><option>YouTube</option><option>Short / Reel</option><option>TikTok</option></select>
               </label>
-              <button id="generateBtn" class="btn-primary big">✍️ Generar guion</button>
+              <button id="generateBtn" class="btn-primary big"><svg class="icon"><use href="#i-pencil"/></svg> Generar guion</button>
               <span id="genStatus" class="compose-status"></span>
             </div>
           </section>
@@ -304,11 +352,11 @@
             <div class="card-head"><h3>③ Guion</h3><span id="scriptName" class="card-help"></span></div>
             <textarea id="scriptOut" class="script-out" placeholder="Aquí aparecerá tu guion. Puedes editarlo a mano."></textarea>
             <div class="row">
-              <button id="saveScriptBtn" class="btn-secondary">💾 Guardar</button>
-              <button id="copyScriptBtn" class="btn-secondary">⧉ Copiar</button>
-              <button id="recordScriptBtn" class="btn-rec">🎬 Grabar con este guion</button>
+              <button id="saveScriptBtn" class="btn-secondary"><svg class="icon"><use href="#i-save"/></svg> Guardar</button>
+              <button id="copyScriptBtn" class="btn-secondary"><svg class="icon"><use href="#i-copy"/></svg> Copiar</button>
+              <button id="recordScriptBtn" class="btn-rec"><svg class="icon"><use href="#i-record"/></svg> Grabar con este guion</button>
               <input id="scriptFeedback" class="grow" placeholder="Ajustar: 'más corto', 'gancho más fuerte', 'añade un ejemplo'…" />
-              <button id="rewriteBtn" class="btn-primary">↻ Reescribir</button>
+              <button id="rewriteBtn" class="btn-primary"><svg class="icon"><use href="#i-refresh"/></svg> Reescribir</button>
             </div>
           </section>
 
@@ -344,9 +392,14 @@
       </div>
     </div>
 
+    <!-- Toasts -->
+    <div id="toastHost" class="toast-host"></div>
+
     <script src="vendor/vb/virtual-background.js"></script>
     <script src="campipe.js"></script>
     <script src="camcrop.js"></script>
+    <script src="vendor/xterm/xterm.js"></script>
+    <script src="vendor/xterm/addon-fit.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

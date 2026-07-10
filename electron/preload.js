@@ -47,6 +47,16 @@ contextBridge.exposeInMainWorld('studio', {
   deleteScript: (p) => ipcRenderer.invoke('delete-script', p),
 
   // recording lifecycle (floating bar + global shortcuts)
+  // embedded Claude Code terminal (PTY <-> xterm)
+  terminal: {
+    start: (payload) => ipcRenderer.invoke('terminal-start', payload),
+    onData: (cb) => ipcRenderer.on('terminal-data', (_e, d) => cb(d)),
+    onExit: (cb) => ipcRenderer.on('terminal-exit', (_e, code) => cb(code)),
+    sendInput: (data) => ipcRenderer.send('terminal-input', data),
+    resize: (cols, rows) => ipcRenderer.send('terminal-resize', { cols, rows }),
+    kill: () => ipcRenderer.send('terminal-kill'),
+  },
+
   recordingStarted: (payload) => ipcRenderer.send('recording-started', payload),
   recordingStopped: () => ipcRenderer.send('recording-stopped'),
   floatIdle: (payload) => ipcRenderer.send('float-idle', payload), // clip saved, stay floating
