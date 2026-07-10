@@ -384,7 +384,7 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.15); }
 .log .err { color: var(--danger-text); }
 
 /* registro plegable (vista grabar) */
-.rec-log { margin: var(--sp-3) var(--sp-4) var(--sp-4); }
+.rec-log { margin: var(--sp-3) 0 var(--sp-2); }
 .rec-log summary { cursor: pointer; font-size: var(--fs-sm); color: var(--text-3); padding: 4px 0; }
 .rec-log summary:hover { color: var(--text-2); }
 .rec-log[open] summary { margin-bottom: 6px; }
@@ -690,6 +690,11 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.15); }
 
 /* grupos de controles (fieldsets) */
 .rec-groups { display: flex; flex-direction: column; gap: var(--sp-3); margin-top: var(--sp-3); }
+.devices-lbl { font-size: var(--fs-sm); color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+.devices-lbl select { max-width: 200px; }
+.grp .tp-editor { flex-basis: 100%; margin-top: 0; }
+.grp .meter { flex: 1; min-width: 140px; max-width: 280px; }
+.rec-shortcuts { margin-left: auto; text-align: right; }
 .grp {
   border: 1px solid var(--border-1); border-radius: var(--r-lg);
   padding: var(--sp-3) var(--sp-4); margin: 0;

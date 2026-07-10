@@ -889,7 +889,7 @@ function updateScreenCaption() {
   const cap = el('screenCap')
   if (!cap) return
   const s = state.sources.find((x) => x.id === state.selectedSourceId)
-  if (!s) { cap.textContent = 'Pantalla — elige una fuente arriba'; return }
+  if (!s) { cap.textContent = 'Pantalla — elige una fuente a la izquierda'; return }
   const extra = s.detail ? ` · ${s.detail}` : ''
   cap.textContent = `${s.kind === 'screen' ? 'Pantalla' : 'Ventana'} · ${s.name}${extra}`
 }
@@ -1364,7 +1364,7 @@ function stopMeter() { if (meterRAF) cancelAnimationFrame(meterRAF); meterRAF = 
 function updateReady() {
   const ready = state.selectedSourceId && state.camStream && state.current && !state.recording
   el('recBtn').disabled = !ready
-  if (state.selectedSourceId && !state.recording) el('recHint').textContent = `Grabando en: ${state.currentName}`
+  if (state.selectedSourceId && !state.recording) el('recHint').textContent = `Grabarás en: ${state.currentName}`
 }
 
 // ---- Countdown -------------------------------------------------------------
@@ -1534,9 +1534,10 @@ async function saveClip(durationMs) {
   state.detail = summary
   updateClipsCta()
   renderRecClips() // refresh the strip at the bottom of the record view
-  el('doneMsg').textContent = `✓ Clip ${summary.clipCount} guardado (${(durationMs / 1000).toFixed(1)}s). Graba otro o:`
+  el('doneMsg').textContent = `✓ Clip ${summary.clipCount} guardado (${(durationMs / 1000).toFixed(1)}s)`
   el('recHint').textContent = `Listo. Tienes ${summary.clipCount} clip${summary.clipCount > 1 ? 's' : ''}.`
   log(`✓ ${summary.clipCount}º clip guardado (${(durationMs / 1000).toFixed(1)}s)`, 'ok')
+  toast(`✓ Clip ${summary.clipCount} guardado (${(durationMs / 1000).toFixed(1)}s)`, 'ok')
 }
 
 // ---- Modals ----------------------------------------------------------------
@@ -1618,6 +1619,7 @@ el('openFolder').addEventListener('click', () => window.studio.revealPath(state.
 el('recHere').addEventListener('click', () => showRecord(state.current, state.currentName))
 el('backProject').addEventListener('click', () => openProject(state.current))
 el('doneRec').addEventListener('click', () => openProject(state.current))
+on('doneAgain', 'click', beginRecording)
 el('tpToggle').addEventListener('click', toggleTeleprompter)
 el('tpEdit').addEventListener('click', toggleTpEditor)
 el('tpSave').addEventListener('click', saveTeleprompter)

@@ -215,7 +215,7 @@
     <main id="viewRecord" class="layout hidden">
       <section class="panel sources">
         <div class="panel-head">
-          <h2>① Elige qué grabar</h2>
+          <h2><svg class="icon"><use href="#i-screen"/></svg> Fuente de pantalla</h2>
           <button id="refreshSources" class="btn-tertiary"><svg class="icon"><use href="#i-refresh"/></svg> Actualizar</button>
         </div>
         <p class="panel-help">Tu pantalla completa o una ventana concreta.</p>
@@ -234,45 +234,9 @@
         </div>
 
         <div class="stage-body">
-          <h3 class="step">② Tu cámara y micro</h3>
-          <div class="devices">
-            <label>Cámara <select id="camSelect"></select></label>
-            <label>Micrófono <select id="micSelect"></select></label>
-            <label class="blur-toggle switch"><input type="checkbox" id="blurToggle" /> Difuminar fondo</label>
-            <label class="blur-toggle blur-level" id="blurLevelRow" style="display:none">
-              Intensidad
-              <input type="range" id="blurLevel" min="0" max="100" value="50" />
-            </label>
-            <span class="blur-toggle bg-row" id="bgRow" style="display:none">
-              Fondo
-              <select id="bgSelect"><option value="">— ninguno (blur) —</option></select>
-              <button id="bgPick" class="mini" type="button" title="Elegir una imagen tuya">…</button>
-              <span id="bgName" class="bg-name"></span>
-              <button id="bgClear" class="mini" type="button" style="display:none" title="Quitar fondo"><svg class="icon icon-sm"><use href="#i-x"/></svg></button>
-            </span>
-            <label class="blur-toggle switch"><input type="checkbox" id="cropToggle" /> Recortar cámara</label>
-            <span class="blur-toggle crop-tools" id="cropTools" style="display:none">
-              Proporción
-              <span class="segmented">
-                <button class="mini ar-btn" data-ar="free" type="button">Libre</button>
-                <button class="mini ar-btn" data-ar="1" type="button">1:1</button>
-                <button class="mini ar-btn" data-ar="0.8" type="button">4:5</button>
-                <button class="mini ar-btn" data-ar="0.5625" type="button">9:16</button>
-              </span>
-              <button class="mini" id="cropReset" type="button" title="Recuadro completo">Reiniciar</button>
-            </span>
-          </div>
-          <div class="meter-row">
-            <span class="meter-lbl">Nivel de micro</span>
-            <div class="meter"><div id="meterFill" class="meter-fill"></div></div>
-            <label class="blur-toggle switch" title="Mezcla el sonido del sistema (YouTube, música, apps…) con tu voz en una sola pista">
-              <input type="checkbox" id="sysAudioToggle" /> Grabar sonido del sistema
-            </label>
-          </div>
-
           <div class="previews">
             <figure class="preview">
-              <figcaption id="screenCap">Pantalla — elige una fuente arriba</figcaption>
+              <figcaption id="screenCap">Pantalla — elige una fuente a la izquierda</figcaption>
               <video id="screenPreview" muted autoplay playsinline></video>
             </figure>
             <figure class="preview cam">
@@ -289,37 +253,79 @@
             </figure>
           </div>
 
-          <h3 class="step">③ Graba</h3>
-          <div class="controls">
-            <div id="recHint" class="hint">Elige una pantalla arriba para poder grabar.</div>
-            <div class="rec-controls">
-              <button id="recBtn" class="btn-rec big" disabled><svg class="icon"><use href="#i-record"/></svg> Grabar</button>
-              <button id="pauseBtn" class="pause" disabled>Pausar</button>
-              <button id="stopBtn" class="stop" disabled><svg class="icon"><use href="#i-stop"/></svg> Parar</button>
-            </div>
+          <div class="rec-groups">
+            <fieldset class="grp">
+              <legend><svg class="icon icon-sm"><use href="#i-video"/></svg> Cámara</legend>
+              <label class="devices-lbl">Dispositivo <select id="camSelect"></select></label>
+              <label class="blur-toggle switch"><input type="checkbox" id="blurToggle" /> Difuminar fondo</label>
+              <label class="blur-toggle blur-level" id="blurLevelRow" style="display:none">
+                Intensidad
+                <input type="range" id="blurLevel" min="0" max="100" value="50" />
+              </label>
+              <span class="blur-toggle bg-row" id="bgRow" style="display:none">
+                Fondo
+                <select id="bgSelect"><option value="">— ninguno (blur) —</option></select>
+                <button id="bgPick" class="mini" type="button" title="Elegir una imagen tuya">…</button>
+                <span id="bgName" class="bg-name"></span>
+                <button id="bgClear" class="mini" type="button" style="display:none" title="Quitar fondo"><svg class="icon icon-sm"><use href="#i-x"/></svg></button>
+              </span>
+              <label class="blur-toggle switch"><input type="checkbox" id="cropToggle" /> Recortar cámara</label>
+              <span class="blur-toggle crop-tools" id="cropTools" style="display:none">
+                Proporción
+                <span class="segmented">
+                  <button class="mini ar-btn" data-ar="free" type="button">Libre</button>
+                  <button class="mini ar-btn" data-ar="1" type="button">1:1</button>
+                  <button class="mini ar-btn" data-ar="0.8" type="button">4:5</button>
+                  <button class="mini ar-btn" data-ar="0.5625" type="button">9:16</button>
+                </span>
+                <button class="mini" id="cropReset" type="button" title="Recuadro completo">Reiniciar</button>
+              </span>
+            </fieldset>
+
+            <fieldset class="grp">
+              <legend><svg class="icon icon-sm"><use href="#i-mic"/></svg> Audio</legend>
+              <label class="devices-lbl">Micrófono <select id="micSelect"></select></label>
+              <span class="meter-lbl">Nivel</span>
+              <div class="meter"><div id="meterFill" class="meter-fill"></div></div>
+              <label class="blur-toggle switch" title="Mezcla el sonido del sistema (YouTube, música, apps…) con tu voz en una sola pista">
+                <input type="checkbox" id="sysAudioToggle" /> Grabar sonido del sistema
+              </label>
+            </fieldset>
+
+            <fieldset class="grp">
+              <legend><svg class="icon icon-sm"><use href="#i-file-text"/></svg> Teleprompter</legend>
+              <button id="tpToggle" class="btn-secondary"><span id="tpToggleLbl">Mostrar teleprompter</span></button>
+              <button id="tpEdit" class="btn-tertiary"><svg class="icon"><use href="#i-pencil"/></svg> Editar texto</button>
+              <span class="hint">Sale cerca de la cámara y no se graba.</span>
+              <div id="tpEditor" class="tp-editor hidden">
+                <textarea id="tpText" placeholder="Escribe aquí lo que quieres leer mientras grabas…"></textarea>
+                <button id="tpSave" class="btn-primary">Guardar texto</button>
+              </div>
+            </fieldset>
           </div>
-          <p class="panel-help">Al grabar, la ventana se oculta y verás una mini-cámara abajo a la derecha. Atajos: ⌘⇧1 pausar · ⌘⇧2 parar.</p>
+
+          <div class="rec-bar">
+            <button id="recBtn" class="btn-rec big" disabled><svg class="icon"><use href="#i-record"/></svg> Grabar</button>
+            <button id="pauseBtn" class="pause" disabled>Pausar</button>
+            <button id="stopBtn" class="stop" disabled><svg class="icon"><use href="#i-stop"/></svg> Parar</button>
+            <div id="recHint" class="hint">Elige una pantalla a la izquierda para poder grabar.</div>
+            <span class="hint rec-shortcuts">Al grabar, la ventana se oculta (mini-cámara abajo-dcha) · ⌘⇧1 pausar · ⌘⇧2 parar</span>
+          </div>
 
           <div id="doneBar" class="done-bar hidden">
             <span id="doneMsg" class="done-msg">✓ Clip guardado</span>
-            <button id="doneRec" class="btn-primary">Ver clips y montar el vídeo →</button>
-          </div>
-
-          <div class="tp-row">
-            <button id="tpToggle" class="btn-secondary"><svg class="icon"><use href="#i-file-text"/></svg> <span id="tpToggleLbl">Mostrar teleprompter</span></button>
-            <button id="tpEdit" class="btn-tertiary"><svg class="icon"><use href="#i-pencil"/></svg> Editar texto</button>
-            <span class="hint">El teleprompter sale cerca de la cámara y no se graba.</span>
-          </div>
-          <div id="tpEditor" class="tp-editor hidden">
-            <textarea id="tpText" placeholder="Escribe aquí lo que quieres leer mientras grabas…"></textarea>
-            <button id="tpSave" class="btn-primary">Guardar texto</button>
+            <button id="doneAgain" class="btn-secondary"><svg class="icon"><use href="#i-record"/></svg> Grabar otro</button>
+            <button id="doneRec" class="btn-primary">Ir a montar →</button>
           </div>
 
           <h3 class="step" id="recClipsTitle">Clips de este proyecto</h3>
           <div id="recClips" class="rec-clips"><div class="empty">Aún no has grabado clips.</div></div>
-        </div>
 
-        <div id="log" class="log"></div>
+          <details class="rec-log">
+            <summary>Registro técnico</summary>
+            <div id="log" class="log"></div>
+          </details>
+        </div>
       </section>
     </main>
 
