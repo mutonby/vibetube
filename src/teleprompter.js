@@ -24,18 +24,28 @@ function setScripts(scripts, selected) {
 }
 
 window.tp.onInit((p) => {
-  if (p && typeof p.text === 'string') textEl.value = p.text
+  if (p && typeof p.text === 'string') loadText(p.text)
   currentPath = (p && p.currentPath) || ''
   setScripts((p && p.scripts) || [], currentPath)
 })
-window.tp.onText((text) => { if (typeof text === 'string') textEl.value = text })
+window.tp.onText((text) => { if (typeof text === 'string') loadText(text) })
 window.tp.onLoaded((p) => { // a script was loaded by us
-  if (p && typeof p.text === 'string') textEl.value = p.text
+  if (p && typeof p.text === 'string') loadText(p.text)
   currentPath = (p && p.path) || ''
   loadSel.value = currentPath
-  textEl.scrollTop = 0
   flashSaved('cargado')
 })
+
+function restart() {
+  setPlaying(false)
+  textEl.setSelectionRange(0, 0)
+  textEl.scrollTop = 0
+  panel.scrollTop = 0
+}
+function loadText(text) {
+  textEl.value = text
+  restart()
+}
 
 function tick() {
   if (!playing) return
@@ -67,7 +77,7 @@ document.getElementById('slower').addEventListener('click', () => { speed = Math
 document.getElementById('faster').addEventListener('click', () => { speed += 0.3 })
 document.getElementById('smaller').addEventListener('click', () => { fontSize = Math.max(16, fontSize - 3); textEl.style.fontSize = fontSize + 'px' })
 document.getElementById('bigger').addEventListener('click', () => { fontSize += 3; textEl.style.fontSize = fontSize + 'px' })
-document.getElementById('restart').addEventListener('click', () => { textEl.scrollTop = 0; setPlaying(false) })
+document.getElementById('restart').addEventListener('click', restart)
 document.getElementById('close').addEventListener('click', () => window.tp.close())
 document.getElementById('save').addEventListener('click', save)
 loadSel.addEventListener('change', (e) => { if (e.target.value) window.tp.load(e.target.value) })

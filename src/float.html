@@ -13,6 +13,8 @@
         background: #000; border: 1px solid #ffffff22; box-shadow: 0 10px 34px #000a;
       }
       #self { display: block; width: 100%; height: 158px; object-fit: cover; background: #111; transform: scaleX(-1); }
+      #project { position: absolute; top: 8px; left: 8px; right: 8px; width: fit-content; max-width: calc(100% - 32px); padding: 4px 8px; border-radius: 6px; background: #101018bb; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+      #project:empty { display: none; }
       .bar {
         display: flex; align-items: center; gap: 8px; padding: 8px 10px; height: 38px;
         background: rgba(14,14,22,0.96);
@@ -33,11 +35,17 @@
       /* Show recording controls only while recording, idle controls only when idle */
       body.idle .rc { display: none; }
       body:not(.idle) .ic { display: none; }
+      body.count .t { font-size: 34px; color: #ffb454; }
+      body.go .t { color: #4ade80; }
+      body.count .rc { visibility: hidden; }
+      .warn { position: absolute; left: 8px; right: 8px; top: 8px; padding: 6px 10px; border-radius: 8px; background: rgba(220, 60, 60, .92); color: #fff; font: 600 12px/1.3 -apple-system, system-ui, sans-serif; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 5; }
+      .warn.show { opacity: 1; }
     </style>
   </head>
   <body>
     <div class="wrap">
-      <video id="self" autoplay muted playsinline></video>
+      <canvas id="self" width="320" height="180"></canvas>
+      <span id="project" title="Proyecto donde se guardan los clips"></span>
       <div class="bar">
         <span class="dot"></span>
         <span id="t" class="t">00:00</span>
@@ -48,9 +56,6 @@
         <button id="done" class="b done ic" title="Terminar y volver a la ventana">✓</button>
       </div>
     </div>
-    <script src="vendor/vb/virtual-background.js"></script>
-    <script src="campipe.js"></script>
-    <script src="camcrop.js"></script>
     <script src="float.js"></script>
   </body>
 </html>

@@ -23,12 +23,21 @@ Lee también `README.md` (uso) y `HANDOFF.md` (contrato del EDL multicam entre g
    predefinidos** (`hyperframes init --example <nombre>`), no gráficos hechos a mano.
 
 ### Layout del repo
-- `electron/main.js` — proceso principal (~38 KB): ventana, IPC, protocolo `rsmedia://`,
-  spawn del agente headless (`claude -p …`), prompts de compose/iterate.
+- `electron/main.js` — proceso principal: ventanas, IPC (proyectos, clips por chunks, guiones),
+  guardas de ruta (`guardPath`/`guardRoot`: el renderer solo toca carpetas raíz elegidas).
+- `electron/agent.js` — `runAgentJob()`: spawn de `claude -p` headless, timeouts, kill de grupo,
+  coste, registro de huérfanos, log en `edit/_agent.log`.
+- `electron/prompts.js` — todos los prompts (compose/iterate/montageBrief + analyze/generate/
+  rewrite/hooks de guiones). Funciones puras, testeadas.
+- `electron/media-protocol.js` — `rsmedia://` con Range, restringido a raíces permitidas.
+- `electron/settings.js` — ajustes durables en `userData/settings.json`.
+- `electron/util.js` — helpers puros (stamp, slugify, parseRange, isUnder, writeJson atómico…).
 - `electron/preload.js` — puente `contextBridge` (`window.studio.*`).
 - `electron/{float,tp}-preload.js` — overlays flotantes (cámara flotante / teleprompter).
-- `src/renderer.js` (~44 KB) — UI: grabación, previews, blur, histórico, disparar montaje/edición.
-- `src/campipe.js` — pipeline de cámara con **blur de fondo** (MediaPipe Selfie Segmentation).
+- `src/renderer.js` — núcleo UI (estado, navegación, proyectos, editor/feed, terminal);
+  `src/recording.js` — fuentes/dispositivos/blur/crop/MediaRecorder por chunks;
+  `src/scripts-view.js` — vista Guiones; `src/wire.js` — cableado (se carga el último).
+- `src/campipe.js` — selección del motor de cámara: MatAnyone2 local en Apple Silicon, LiveKit en otros equipos.
 - `src/index.html`, `src/styles.css` — UI.
 - `src/{float,teleprompter}.{html,js}` — ventanas overlay.
 - `_scripts/` — utilidades sueltas.
@@ -91,13 +100,46 @@ claude -p "<prompt>" --add-dir <projDir> \
 
 ---
 
+## Cámara en crudo + recorte de fondo offline
+
+El efecto en tiempo real usa MatAnyone2Kit en Apple Silicon cuando está instalado
+con `npm run build:matting`; LiveKit 0.8.0 queda para los demás equipos.
+`native/README.md` fija la revisión, compilación y licencias. El usuario aprobó la
+variante con máscara inicial completa de Vision: se elimina el recorte rectangular
+que cortaba brazos/pelo; no se cambian pesos ni memoria temporal. `src/campipe.js`
+selecciona el motor; `matanyone-campipe.js` transporta y compone fotogramas.
+No añadir filtros de pelo, silla o máscaras por color. Mantener imagen y alpha
+del mismo fotograma y una sola inferencia pendiente.
+
+Se graba por defecto la misma cámara procesada que muestra la previsualización.
+«Guardar cámara original» (`state.rawRecord`) es una opción del usuario, no un
+requisito. Si se activa, se conserva el original y el fondo elegido se anota en
+`clips[].cam` para aplicarlo después con el helper offline.
+
+`_scripts/rematte_cam.py` usa **RobustVideoMatting** (recurrente → coherencia temporal de serie;
+medido: 22-44 fps en un M1 Pro, 0,28% de variación de área entre fotogramas). Dos modos:
+
+- `--background auto` (por defecto) — material YA COMPUESTO (lo grabado antes de este cambio).
+  Reconstruye la placa de fondo del propio vídeo (mediana temporal de los píxeles que la máscara
+  da por fondo) y luego **identifica cuál de `src/backgrounds/*.jpg` se usó**, ajustando escala,
+  desenfoque y ganancia por canal contra esa placa. Se acepta por MARGEN sobre la segunda
+  candidata, no por umbral absoluto (medido: 7,6 frente a 14,9 → 1,95x). Hace falta porque la
+  placa medida tiene huecos justo detrás del cuerpo (~21% de píxeles) y rellenarlos por
+  inpainting inventa manchas.
+- Clips con `cam.raw` — no adivina nada: compone sobre el fondo que anotó el grabador.
+
+Trampas: el `webcam.webm` de MediaRecorder es **fuertemente VFR** (deltas de 0 a 156 ms, >50% de
+los fotogramas fuera de ±5% de la mediana), así que se decodifica con `fps=N` a CFR de forma
+consciente —igual que hace `render.py` al pasarlo a 24 fps— y **el audio se copia sin tocar**,
+que es la única fuente de sonido del proyecto. El script verifica duración, audio y dimensiones
+de cada salida y se niega a tocar `project.json` (`--apply`) si algún clip no pasa.
+
 ## Grabación y blur de fondo (`src/campipe.js`, `src/renderer.js`)
 
-- **Blur de fondo pro**: MediaPipe Selfie Segmentation + **suavizado temporal EMA de la máscara**
-  (técnica de Google Meet) para eliminar el parpadeo en los bordes. Compositing en canvas
-  (`source-in` / `destination-over` / decay+`lighter` para la EMA de alpha).
+- **Blur de fondo**: MatAnyone2 conserva la memoria temporal; composición en canvas
+  con el alpha del modelo. No hay una EMA manual ni filtros de contorno propios.
 - **Slider de intensidad**: `#blurLevel` (0-100), persistido en `localStorage rs_blurlevel`,
-  aplicado en vivo con `setBlurAmount()`. `_bgBlurPx()` mapea el nivel a px de blur.
+  aplicado en vivo con `setBlurAmount()`.
 - **Robustez de dispositivos**: `startCamPreview` usa un helper `acquire()` que reintenta sin
   `{exact: deviceId}` si el deviceId guardado está obsoleto (OverconstrainedError/NotFoundError) y
   muestra pistas de error en español por `e.name` (NotReadable/NotAllowed/Overconstrained/…).
@@ -118,4 +160,6 @@ barra hacia adelante) en el `<video>`; con `net.fetch(file://)` no funcionaba po
   copiada en el `.env` de video-use. **Nunca** imprimir/echo del valor; los `.env` van gitignored.
 - **VibeDeck voice mode** (en `~/CLAUDE.md`): pide usar el tool `speak_response` en cada respuesta.
   Ese tool **no siempre está disponible**; si no existe, responder en texto normal.
-- Ejecutar la app: `npm start` (Electron). Los proyectos pesados no se versionan.
+- Ejecutar la app: `npm start` (Electron). `npm test` / `npm run check` antes de dar por bueno un cambio.
+  Verificación de UI sin manos: `./node_modules/.bin/electron . --remote-debugging-port=9333` + driver CDP.
+- Los proyectos pesados no se versionan. `test/project.json` es un fixture: no dejarlo modificado.

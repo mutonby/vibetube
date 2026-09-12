@@ -3,9 +3,9 @@
 const t = document.getElementById('t')
 const p = document.getElementById('p')
 const self = document.getElementById('self')
+const project = document.getElementById('project')
+window.floatbar.onInit(payload => { project.textContent = payload.projectName || '' })
 
-let pipe = null
-let cropPipe = null
 
 document.getElementById('r').addEventListener('click', () => window.floatbar.control('restart'))
 document.getElementById('p').addEventListener('click', () => window.floatbar.control('pause'))
@@ -15,7 +15,10 @@ document.getElementById('done').addEventListener('click', () => window.floatbar.
 
 // Any timer tick means we're recording → recording controls.
 window.floatbar.onElapsed((payload) => {
+  if (payload.projectName) project.textContent = payload.projectName
   document.body.classList.remove('idle')
+  document.body.classList.toggle('count', !!payload.count)
+  document.body.classList.toggle('go', !!payload.go)
   if (payload.text) t.textContent = payload.text
   document.body.classList.toggle('paused', !!payload.paused)
   p.textContent = payload.paused ? '▶' : '⏸'
@@ -23,36 +26,44 @@ window.floatbar.onElapsed((payload) => {
 
 // A clip was saved but we stay floating → idle controls (grabar otro / terminar).
 window.floatbar.onIdle((payload) => {
+  if (payload?.projectName) project.textContent = payload.projectName
   document.body.classList.add('idle')
   document.body.classList.remove('paused')
   const n = (payload && payload.clips) || 0
   t.textContent = n === 1 ? '1 clip guardado' : `${n} clips guardados`
 })
 
-// Self-view: open the same camera (display only, no audio) and optionally blur.
-window.floatbar.onInit(async (state) => {
-  const constraints = {
-    audio: false,
-    video: state.camId ? { deviceId: { exact: state.camId } } : { width: { ideal: 640 }, height: { ideal: 360 } },
+// Aviso crítico del grabador (la ventana principal está oculta): se muestra
+// sobre la barra unos segundos.
+let warnEl = null
+let warnTimer = null
+window.floatbar.onWarn((msg) => {
+  if (!warnEl) {
+    warnEl = document.createElement('div')
+    warnEl.className = 'warn'
+    document.body.appendChild(warnEl)
   }
-  try {
-    const raw = await navigator.mediaDevices.getUserMedia(constraints)
-    let out = raw
-    if (state.blur && window.CamPipe) {
-      pipe = new window.CamPipe()
-      out = await pipe.start(raw, {
-        blur: true,
-        blurAmount: typeof state.blurLevel === 'number' ? state.blurLevel / 100 : undefined,
-        background: state.bg || null, // same virtual background as the recorder
-      })
-    }
-    // Mirror the recorder's crop so the self-view shows the real framing.
-    if (state.crop && state.cropRect && window.CamCrop) {
-      cropPipe = new window.CamCrop()
-      out = cropPipe.start(out, state.cropRect)
-    }
-    self.srcObject = out
-  } catch (e) {
-    // camera busy or denied — self-view stays black, recording is unaffected
-  }
+  warnEl.textContent = msg
+  warnEl.classList.add('show')
+  clearTimeout(warnTimer)
+  warnTimer = setTimeout(() => warnEl.classList.remove('show'), 6000)
 })
+
+// Pull only small, processed frames. At most one decode is in flight; recording
+// remains at camera frame rate independently of this 10 fps thumbnail.
+let decoding = false
+window.floatbar.onPreview(async bytes => {
+  if (decoding) return
+  decoding = true
+  let bitmap
+  try {
+    bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/jpeg' }))
+    if (self.width !== bitmap.width || self.height !== bitmap.height) {
+      self.width = bitmap.width; self.height = bitmap.height
+    }
+    self.getContext('2d').drawImage(bitmap, 0, 0)
+  } finally { bitmap?.close(); decoding = false }
+})
+const previewTimer = setInterval(() => window.floatbar.requestPreview(), 100)
+window.addEventListener('unload', () => clearInterval(previewTimer))
+window.floatbar.requestPreview()

@@ -315,17 +315,120 @@ def _scale_cover(w: int, h: int) -> str:
     return f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1"
 
 
+# -------- Portrait (9:16) composition ---------------------------------------
+#
+# A landscape source (16:9 screen capture, 16:9 graphic) cannot fill a 9:16
+# canvas. Three knobs control how it is placed, all overridable per range:
+#
+#   PORTRAIT_BG          the blurred plate behind the source. It LIFTS BLACKS
+#                        (colorlevels romin) so a dark UI capture never
+#                        degenerates into a pure-black void, and caps highlights
+#                        so it stays a background.
+#   PORTRAIT_MAX_CROP    "auto" fit trims this fraction off the source WIDTH
+#                        (centered) before scaling, so a 16:9 screen becomes 4:3
+#                        and its band grows from 32% to 42% of the canvas height.
+#                        The trimmed 25% is normally sidebar/whitespace.
+#   PORTRAIT_ANCHOR      0 = band flush to the top of its box, 1 = flush to the
+#                        bottom, 0.5 = centered. Biased UP because burned 9:16
+#                        captions and the cam PiP always live low.
+
+PORTRAIT_BG = ("gblur=sigma=42,eq=saturation=0.85,"
+               "colorlevels=romin=0.10:gomin=0.10:bomin=0.10"
+               ":romax=0.62:gomax=0.62:bomax=0.62")
+PORTRAIT_MAX_CROP = 0.25   # 16:9 → 4:3
+PORTRAIT_ANCHOR = 0.38
+PORTRAIT_PAD = 0.045       # fraction of H kept clear above the band
+PORTRAIT_GAP = 0.030       # fraction of H between the band and the cam PiP
+PORTRAIT_SPLIT = 0.5       # stacked pip: cam's share of the canvas height
+
+
+def _roi_crop(roi) -> str:
+    """`[x, y, w, h]` in NORMALIZED (0-1) source coordinates → a crop filter.
+
+    Lets an EDL point the vertical reframe at the part of the screen that
+    actually carries the content, instead of shrinking the whole desktop."""
+    if not roi:
+        return ""
+    try:
+        x, y, w, h = (float(v) for v in roi)
+    except (TypeError, ValueError):
+        return ""
+    w = max(0.05, min(1.0, w))
+    h = max(0.05, min(1.0, h))
+    x = max(0.0, min(1.0 - w, x))
+    y = max(0.0, min(1.0 - h, y))
+    if w >= 0.999 and h >= 0.999:
+        return ""
+    return f"crop=iw*{w:.5f}:ih*{h:.5f}:iw*{x:.5f}:ih*{y:.5f},"
+
+
 def _portrait_fill(in_ref: str, w: int, h: int, pre: str = "") -> str:
-    """Compose a (typically 16:9) source onto a w×h PORTRAIT canvas without ugly
-    black bars: the source is scaled-to-fit and centered over a strongly blurred,
-    dimmed cover of itself (reels-style depth of field). `pre` is an optional
-    filter prefix (tonemap/crop) applied before the split. Output is on [pcv]."""
+    """Scale-to-fit + center a source over a blurred cover of itself.
+
+    Used for GRAPHIC cutaways, which are authored at the canvas size already —
+    no cropping, no anchoring. Screen sources go through `_portrait_screen`."""
     return (
         f"[{in_ref}]{pre}split[pbg][pfg];"
-        f"[pbg]{_scale_cover(w, h)},gblur=sigma=42,eq=brightness=-0.20:saturation=0.85[pbg2];"
+        f"[pbg]{_scale_cover(w, h)},{PORTRAIT_BG}[pbg2];"
         f"[pfg]scale={w}:{h}:force_original_aspect_ratio=decrease,setsar=1[pfg2];"
         f"[pbg2][pfg2]overlay=(W-w)/2:(H-h)/2,setsar=1[pcv]"
     )
+
+
+def _portrait_screen(in_ref: str, w: int, h: int, pre: str = "", *,
+                     roi=None, fit: str = "auto", box_top: int = 0,
+                     box_h: int | None = None,
+                     anchor: float = PORTRAIT_ANCHOR) -> str:
+    """Compose a landscape SCREEN source onto a w×h portrait canvas.
+
+    The source is placed inside the box `[box_top, box_top + box_h]` — the space
+    left free by the cam PiP and the captions — over a full-canvas blurred plate.
+
+    `fit`:
+      "auto"  (default) trim PORTRAIT_MAX_CROP off the width, then scale to fit
+              the box. Biggest legible band without guessing what matters.
+      "fit"   scale to fit with no trimming (the pre-2026 behaviour).
+      "cover" fill the box completely, cropping whatever overflows.
+
+    The vertical position uses an overlay expression on `h`, so the band height
+    never has to be probed. Output is on [pcv]."""
+    box_h = h if box_h is None else max(2, box_h)
+    crop = _roi_crop(roi)
+    if fit == "cover":
+        fg = f"[pfg]{crop}{_scale_cover(w, box_h)}[pfg2];"
+        y = f"{box_top}"
+    else:
+        trim = 0.0 if fit == "fit" else max(0.0, min(0.6, PORTRAIT_MAX_CROP))
+        # An explicit ROI already says what to keep — don't trim it further.
+        if crop:
+            trim = 0.0
+        tc = f"crop=iw*{1 - trim:.4f}:ih:iw*{trim / 2:.4f}:0," if trim > 0 else ""
+        fg = (f"[pfg]{crop}{tc}scale={w}:{box_h}"
+              f":force_original_aspect_ratio=decrease,setsar=1[pfg2];")
+        a = max(0.0, min(1.0, anchor))
+        y = f"{box_top}+({box_h}-h)*{a:.3f}"
+    return (
+        f"[{in_ref}]{pre}split[pbg][pfg];"
+        f"[pbg]{_scale_cover(w, h)},{PORTRAIT_BG}[pbg2];"
+        f"{fg}"
+        f"[pbg2][pfg2]overlay=(W-w)/2:{y},setsar=1[pcv]"
+    )
+
+
+def _screen_opts(r: dict, defaults: dict | None,
+                 default_fit: str = "auto") -> tuple[object, str, float]:
+    """Resolve (roi, fit, anchor) for a range, range value winning over the
+    EDL-level default, which in turn wins over `default_fit`."""
+    d = defaults or {}
+    roi = r.get("screen_roi", d.get("screen_roi"))
+    fit = str(r.get("screen_fit", d.get("screen_fit", default_fit)) or default_fit).lower()
+    if fit not in ("auto", "fit", "cover"):
+        fit = "auto"
+    try:
+        anchor = float(r.get("screen_anchor", d.get("screen_anchor", PORTRAIT_ANCHOR)))
+    except (TypeError, ValueError):
+        anchor = PORTRAIT_ANCHOR
+    return roi, fit, anchor
 
 
 def _pip_xy(corner: str, margin: int) -> tuple[str, str]:
@@ -374,6 +477,7 @@ def extract_segment_multicam(
     screen_crop_top: float = 0.0,
     graphic_path: Path | None = None,
     no_punch: bool = False,
+    screen_defaults: dict | None = None,
 ) -> None:
     """Render one multicam range to a self-contained MP4 at the canvas size.
 
@@ -438,8 +542,13 @@ def extract_segment_multicam(
         zr = _zoom_range(r, portrait, no_punch)
         if portrait:
             zoom = f"{_zoom_chain(W, H, zr[0], zr[1], duration)}," if zr else ""
+            # No cam inset here, so "cover" fills the whole canvas — no plate,
+            # no bars. Override per range with screen_fit/screen_roi when the
+            # crop would cut content off the sides.
+            roi, fit, anchor = _screen_opts(r, screen_defaults, default_fit="cover")
+            pad = 0 if fit == "cover" else int(round(H * PORTRAIT_PAD))
             fc = (
-                f"{_portrait_fill('0:v', W, H, pre=f'{tonemap}{screen_pre}')};"
+                f"{_portrait_screen('0:v', W, H, pre=f'{tonemap}{screen_pre}', roi=roi, fit=fit, box_top=pad, box_h=H - 2 * pad, anchor=anchor)};"
                 f"[pcv]{zoom}fps=24{grade}[vout];[1:a]{af}[aout]"
             )
         else:
@@ -452,47 +561,74 @@ def extract_segment_multicam(
         ]
     else:  # pip
         pip = r.get("pip") or {}
-        scale = float(pip.get("scale", 0.26))
-        margin = int(pip.get("margin", 40))
-        # Vertical: the screen sits in a contained middle band, so the cam goes
-        # BIG and BOTTOM-CENTER below it (reels look, like avatar-muton).
-        if portrait:
-            scale = max(scale, 0.58)
-            margin = max(margin, 90)
-        pw = max(2, (int(round(W * scale)) // 2) * 2)
-        if portrait:
-            x, y = "(W-w)/2", f"H-h-{margin}"  # bottom-center
-        else:
-            x, y = _pip_xy(pip.get("corner", "br"), margin)
         tonemap_s = (TONEMAP_CHAIN + ",") if is_hdr_source(screen) else ""
-        if portrait:
-            bg = (
-                f"{_portrait_fill('0:v', W, H, pre=f'{tonemap_s}{screen_pre}')};"
-                f"[pcv]fps=24[bg];"
+        pip_zr = _zoom_range(r, portrait, no_punch, pip=True)
+        stacked = portrait and str(pip.get("style", "stack")).lower() == "stack"
+
+        if stacked:
+            # VERTICAL SPLIT: screen fills the TOP band, cam fills the BOTTOM
+            # band, both cover-cropped — the frame is 100% picture, no blurred
+            # plate and no gap between them. `pip.split` is the cam's share of
+            # the canvas height (default 0.5 → the cam reaches the middle).
+            try:
+                split = float(pip.get("split", PORTRAIT_SPLIT))
+            except (TypeError, ValueError):
+                split = PORTRAIT_SPLIT
+            split = max(0.25, min(0.6, split))
+            cam_h = max(2, (int(round(H * split)) // 2) * 2)
+            scr_h = H - cam_h
+            roi, fit, anchor = _screen_opts(r, screen_defaults, default_fit="cover")
+            top = _portrait_screen("0:v", W, scr_h, pre=f"{tonemap_s}{screen_pre}",
+                                   roi=roi, fit=fit, box_top=0, box_h=scr_h,
+                                   anchor=anchor)
+            cam_chain = f"[1:v]{_scale_cover(W, cam_h)}"
+            if pip_zr:
+                cam_chain += f",{_zoom_chain_pip(W, cam_h, pip_zr[0], pip_zr[1], duration)}"
+            fc = (
+                f"{top};[pcv]fps=24[top];"
+                f"{cam_chain}[bot];"
+                f"[top][bot]vstack=inputs=2,setsar=1{grade}[vout];"
+                f"[1:a]{af}[aout]"
             )
         else:
-            bg = f"[0:v]{tonemap_s}{screen_pre}{_scale_pad(W, H)},fps=24[bg];"
-        # Punch-in the cam inset. The pip box must stay a fixed size, so we need
-        # its display height ph = even(pw * camH/camW). If cam dims can't be
-        # probed we degrade gracefully to an un-zoomed inset (never break).
-        pip_zr = _zoom_range(r, portrait, no_punch, pip=True)
-        ph = None
-        if pip_zr:
-            dims = ffprobe_dims(cam)
-            if dims:
-                cw, ch = dims
-                if cw > 0:
-                    ph = max(2, (int(round(pw * ch / cw)) // 2) * 2)
-        if pip_zr and ph:
-            pip_chain = f"[1:v]{_zoom_chain_pip(pw, ph, pip_zr[0], pip_zr[1], duration)}[pip];"
-        else:
-            pip_chain = f"[1:v]scale={pw}:-2,setsar=1[pip];"
-        fc = (
-            f"{bg}"
-            f"{pip_chain}"
-            f"[bg][pip]overlay={x}:{y}{grade}[vout];"
-            f"[1:a]{af}[aout]"
-        )
+            scale = float(pip.get("scale", 0.26))
+            margin = int(pip.get("margin", 40))
+            if portrait:
+                scale = max(scale, 0.58)
+                margin = max(margin, 90)
+            pw = max(2, (int(round(W * scale)) // 2) * 2)
+            cam_dims = ffprobe_dims(cam)
+            cam_ar = (cam_dims[1] / cam_dims[0]) if cam_dims and cam_dims[0] else 9 / 16
+            cam_h = max(2, (int(round(pw * cam_ar)) // 2) * 2)
+            if portrait:
+                x, y = "(W-w)/2", f"H-h-{margin}"  # bottom-center
+            else:
+                x, y = _pip_xy(pip.get("corner", "br"), margin)
+            if portrait:
+                roi, fit, anchor = _screen_opts(r, screen_defaults)
+                pad = int(round(H * PORTRAIT_PAD))
+                gap = int(round(H * PORTRAIT_GAP))
+                box_h = max(240, H - cam_h - margin - gap - pad)
+                bg = (
+                    f"{_portrait_screen('0:v', W, H, pre=f'{tonemap_s}{screen_pre}', roi=roi, fit=fit, box_top=pad, box_h=box_h, anchor=anchor)};"
+                    f"[pcv]fps=24[bg];"
+                )
+            else:
+                bg = f"[0:v]{tonemap_s}{screen_pre}{_scale_pad(W, H)},fps=24[bg];"
+            # Punch-in the cam inset. The pip box must stay a fixed size, so we
+            # need its display height ph. If cam dims can't be probed we degrade
+            # gracefully to an un-zoomed inset (never break).
+            ph = cam_h if cam_dims else None
+            if pip_zr and ph:
+                pip_chain = f"[1:v]{_zoom_chain_pip(pw, ph, pip_zr[0], pip_zr[1], duration)}[pip];"
+            else:
+                pip_chain = f"[1:v]scale={pw}:-2,setsar=1[pip];"
+            fc = (
+                f"{bg}"
+                f"{pip_chain}"
+                f"[bg][pip]overlay={x}:{y}{grade}[vout];"
+                f"[1:a]{af}[aout]"
+            )
         io = [
             "-ss", f"{screen_ss:.3f}", "-i", str(screen),
             "-ss", f"{cam_ss:.3f}", "-i", str(cam),
@@ -566,6 +702,9 @@ def extract_all_segments(
         canvas = (int(out.get("width", DEFAULT_CANVAS[0])),
                   int(out.get("height", DEFAULT_CANVAS[1])))
         screen_crop_top = float((edl.get("screen_crop") or {}).get("top", 0) or 0)
+        # EDL-level vertical-reframe defaults; any range may override them.
+        screen_defaults = {k: edl[k] for k in
+                           ("screen_roi", "screen_fit", "screen_anchor") if k in edl}
         for i, r in enumerate(ranges):
             layout = r.get("layout", "pip")
             start, end = float(r["start"]), float(r["end"])
@@ -595,6 +734,7 @@ def extract_all_segments(
                 r, screen_path, cam_path, offset_s, canvas, seg_filter,
                 out_path, preview=preview, draft=draft, screen_crop_top=screen_crop_top,
                 graphic_path=graphic_path, no_punch=no_punch,
+                screen_defaults=screen_defaults,
             )
             seg_paths.append(out_path)
             durations.append(duration)
@@ -622,6 +762,41 @@ def extract_all_segments(
         durations.append(duration)
 
     return seg_paths, durations
+
+
+def zero_video_start(path: Path) -> bool:
+    """Drag the first video frame back to PTS 0, in place. Returns True if it moved.
+
+    A `-c copy` concat of AAC-encoded segments carries the codec's priming delay
+    (1024 samples @48kHz ≈ 21ms) onto the VIDEO track: the first frame lands at
+    pts>0 while the audio starts at 0, so nothing covers [0, pts) and every
+    player paints the opening frame BLACK. No muxer flag fixes it
+    (`-avoid_negative_ts`, `-fflags +genpts`, `-muxpreload/-muxdelay 0`,
+    `-ignore_editlist`, `-itsoffset`, an MPEG-TS round trip — all no-ops here);
+    the `setts` bitstream filter does.
+
+    NOTE: shift `pts` and `dts` SEPARATELY. `setts=ts=…` sets both to the same
+    value, which destroys B-frame reorder and yields duplicate timestamps."""
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                        "-show_entries", "stream=start_pts", "-of", "default=nk=1:nw=1",
+                        str(path)], capture_output=True, text=True).stdout.strip()
+    try:
+        off = int(r)
+    except ValueError:
+        return False
+    if off <= 0:
+        return False
+    tmp = path.with_suffix(".zerots.mp4")
+    try:
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(path), "-c", "copy",
+                        "-bsf:v", f"setts=pts=PTS-{off}:dts=DTS-{off}",
+                        "-movflags", "+faststart", str(tmp)],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError:
+        tmp.unlink(missing_ok=True)
+        return False   # never fail a finished render over the opening frame
+    tmp.replace(path)
+    return True
 
 
 # -------- Lossless concat ----------------------------------------------------
@@ -1295,6 +1470,10 @@ def main() -> None:
         print("loudness normalization → social-ready (-14 LUFS / -1 dBTP / LRA 11)")
         apply_loudnorm_two_pass(tmp_composite, out_path, preview=args.draft)
         tmp_composite.unlink(missing_ok=True)
+
+    # 6. The opening frame must land on PTS 0 or players show black before it.
+    if zero_video_start(out_path):
+        print("  first frame pulled back to PTS 0 (AAC priming offset removed)")
 
     size_mb = out_path.stat().st_size / (1024 * 1024)
     print(f"\ndone: {out_path} ({size_mb:.1f} MB)")

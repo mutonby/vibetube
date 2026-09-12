@@ -17,7 +17,18 @@ Un proyecto = una carpeta con uno o más clips sincronizados:
 - **`screen.webm`** — vídeo de pantalla, sin audio.
 - **`webcam.webm`** — cámara **+ micro**. Es la **única fuente de audio**.
 - **`sync.json`** — `offset_ms = webcam_start − screen_start`, duración y dims reales.
-- **`project.json`** — lista ordenada de clips con su `duration_ms` y `offset_ms`.
+- **`project.json`** — lista ordenada de clips con su `duration_ms` y `offset_ms`. Desde la
+  fase 9 cada clip lleva además `status` (`ok` | `truncated` | `empty` | `warning` | `checking`),
+  `status_note` y `probed_ms` (duración real medida con ffprobe por pista): **un clip
+  `truncated`/`empty` no debe usarse tal cual** — recorta a `probed_ms` o avisa al usuario.
+- **`sync.json` v2** añade `first_data_ms` (primer chunk real de cada grabador, alternativa al
+  offset por `onstart`), `pauses_ms` (intervalos pausados; MediaRecorder ya los omite del
+  fichero, se guardan para trazabilidad) y `probed_ms`/`status`.
+- **`script.md`** (opcional, raíz del proyecto) — el guion con el que se grabó. Sirve para
+  corregir nombres propios en subtítulos, elegir gráficos por sección (GANCHO/DESARROLLO/CIERRE)
+  y honrar marcas editoriales `[PANTALLA: …]`, `[GRÁFICO: …]`, `[CÁMARA]`.
+- **`edit/_agent.log` / `edit/_agent.json`** — log completo y estado del agente headless (pid,
+  sesión); `project.json.agentRuns[]` guarda coste/turnos de cada ejecución.
 
 Ambas pistas de un clip cubren **la misma línea de tiempo**. El editor no elige “la
 mejor toma”: elige **qué plano mostrar** segundo a segundo.

@@ -76,6 +76,7 @@ Helpers (`helpers/transcribe.py`, `helpers/render.py`, etc.) live alongside this
 - **`transcribe_batch.py <videos_dir>`** — 4-worker parallel Scribe transcription. Use for multi-take.
 - **`pack_transcripts.py --edit-dir <dir>`** — `transcripts/*.json` → `takes_packed.md` (phrase-level, break on silence ≥ 0.5s).
 - **`timeline_view.py <video> <start> <end>`** — filmstrip + waveform PNG. On-demand visual drill-down. **Not a scan tool** — use it at decision points, not constantly.
+- **`enhance_voice.py [--clip <dir> | --all | --input <file> -o <out>]`** — **NVIDIA Studio Voice NIM (`48k-hq`).** Professional voice enhancement over gRPC: removes room echo, HVAC hum, and noise while boosting vocal clarity and presence. Automatically chunks recordings > 4.5 min and remuxes into `webcam.webm` (keeping `webcam_orig.webm` backup). Run on raw clips BEFORE mixing SFX and music. Requires `NVIDIA_API_KEY` in env or `~/.config/record-studio/.env`.
 - **`render.py <edl.json> -o <out>`** — per-segment extract → concat → overlays (PTS-shifted) → subtitles LAST. `--preview` for 720p fast. `--build-subtitles` to generate master.srt inline.
 - **`grade.py <in> -o <out>`** — ffmpeg filter chain grade. Presets + `--filter '<raw>'` for custom.
 
@@ -355,6 +356,8 @@ aligns the screen track by that amount. `pip.corner` ∈
 edge padding in px. Set a top-level `screen_crop` like `{"top": 0.04}` to crop a strip off the TOP of the
 screen track before scaling (fraction of height, 0–0.2) — use it to remove the macOS
 menu bar (clock/apps); it applies to `fullscreen` and `pip` layouts, not `fullcam`.
+For a PORTRAIT canvas also see `screen_roi` / `screen_fit` / `screen_anchor` below, which control how
+the 16:9 screen is reframed into 9:16.
 `output` defaults to 1920×1080 — set it to `1080×1920` for
 vertical/shorts. For a project with multiple recorded clips, lay the clips end
 to end on the timeline (one EDL per clip rendered then concatenated, or shift
@@ -382,11 +385,52 @@ reserve full shots for real beats. Three engine features (all in `render.py`) ma
 two canvases, like avatar-muton's `both` mode. You don't re-decide shots: render each EDL once per
 canvas (set `output` to each size). When the canvas is **portrait (H > W)**, `render.py` auto-reframes
 so it looks intentional, not letterboxed: `fullcam` fills the frame (cover/center-crop), `fullscreen`
-and `pip` put the contained screen over a **strongly blurred, dimmed cover of itself** (reels-style
-depth of field) instead of black bars, the cam PiP is enlarged (≥0.34), and captions ride high above
-the platform UI. Render any HyperFrames graphic at BOTH output sizes so each cut-in segment matches
-its canvas. (`render_patched.py` in a project's `edit/` also accepts `--canvas 1080x1920` to render the
+puts the screen over a **blurred cover of itself with lifted blacks** (so a dark UI capture never reads
+as a black void), and `pip` becomes a **stacked split**. Render any HyperFrames graphic at BOTH output
+sizes so each cut-in segment matches its canvas.
+
+**Portrait `pip` = stacked split, not a floating inset.** On a 9:16 canvas the screen fills the TOP
+band and the cam fills the BOTTOM band, both cover-cropped, edge to edge: the frame is 100% picture,
+with no blurred plate and no gap between them. `pip.split` is the cam's share of the canvas height
+(default `0.5`, clamped to 0.25–0.6) — lower it to give the screen more room. `pip.corner`, `pip.scale`
+and `pip.margin` are ignored in this mode; set `"pip": {"style": "inset"}` to get the old floating
+inset back. In landscape nothing changes: `pip` stays a corner inset.
+
+**Vertical reframe of the SCREEN — `screen_roi` / `screen_fit` / `screen_anchor`.** A 16:9 desktop
+scaled to fit 1080 px wide is only 608 px tall — 32% of a 1080×1920 canvas — and its text is
+unreadable on a phone. So in portrait the screen band is placed in the box left free by the cam PiP,
+anchored HIGH, and by default trimmed to 4:3. Three optional keys tune it; each may be set per range
+or once at the TOP LEVEL of the EDL as the default for every range:
+
+| key | values | effect |
+|---|---|---|
+| `screen_fit` | `"cover"` (default in portrait) / `"auto"` / `"fit"` | `cover` fills the box completely, cropping the overflow — no bars, no plate, but it cuts ~⅓ off each side. `auto` trims 25% off the width (16:9 → 4:3) then scales to fit, leaving a blurred plate around it. `fit` never trims (plain letterbox). |
+| `screen_roi` | `[x, y, w, h]` normalized 0–1 | Crop the screen to the region that actually carries the content BEFORE scaling, e.g. `[0.20, 0.0, 0.62, 1.0]` for a centered app window → band **51%**. An explicit ROI disables the `auto` trim (you already said what to keep). |
+| `screen_anchor` | `0.0`–`1.0` (default `0.38`) | Where the band sits in its box: `0` flush top, `0.5` centered, `1` flush bottom. Biased up because captions and the cam live low. |
+
+These affect PORTRAIT `fullscreen` and `pip` only — landscape and the `graphic` layout ignore them.
+**Use them:** a vertical render of a screen recording that leaves the desktop shrunk in a letterbox is
+a defect, not a style. Grab a frame of the vertical output at a `pip`/`fullscreen` moment and LOOK at
+it. The default `cover` crop is centered, so if it slices text or a sidebar off the edge, set a
+`screen_roi` for that range (or fall back to `"screen_fit": "auto"` for a whole-desktop view). (`render_patched.py` in a project's `edit/` also accepts `--canvas 1080x1920` to render the
 same EDL vertical without editing it.)
+
+**The opening frame must land on PTS 0.** A `-c copy` concat of AAC segments drags the codec's
+priming delay (~21 ms) onto the VIDEO track, so the first frame starts at pts>0, nothing covers
+`[0, pts)` and every player paints the opening frame BLACK. `render.py` now fixes its own output
+automatically (`zero_video_start`). If you concatenate renders YOURSELF (a per-clip build script,
+say), do the same afterwards — no muxer flag helps (`-avoid_negative_ts`, `-fflags +genpts`,
+`-muxpreload/-muxdelay 0`, `-ignore_editlist`, `-itsoffset` and an MPEG-TS round trip are all no-ops
+here), only the `setts` bitstream filter, and PTS and DTS must be shifted SEPARATELY:
+
+```bash
+off=$(ffprobe -v error -select_streams v:0 -show_entries stream=start_pts -of default=nk=1:nw=1 in.mp4)
+ffmpeg -y -i in.mp4 -c copy -bsf:v "setts=pts=PTS-$off:dts=DTS-$off" -movflags +faststart out.mp4
+```
+
+`setts=ts=…` sets pts and dts to the SAME value, which destroys B-frame reorder — don't use it.
+Check any final you ship: `ffprobe -v error -show_entries stream=codec_type,start_time out.mp4`
+must report `0.000000` for BOTH streams.
 
 **Graphics in a multicam edit — use the `graphic` layout (NEVER a silent clip):** add a range with
 `{"layout": "graphic", "graphic_file": "animations/slot_N/render.mp4"}`. render.py shows the card

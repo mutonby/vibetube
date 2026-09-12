@@ -1,4 +1,7 @@
 node_modules/
+native/.cache/
+native/bin/
+native/matanyone/.build/
 recordings/
 *.webm
 *.mp4
@@ -13,13 +16,25 @@ avatar-mix-3/
 avatar2/
 alternativa-a-holded/
 alternativa-a-holded-2/
+openshorts/
+openshorts-*/
+record-studio/
 rec_*/
+
+# Python / logs / agent artifacts
+__pycache__/
+*.pyc
+*.pyo
+_agent.log
+_agent.json
 
 # video-use vendored skill: keep secrets + regenerable stuff out of git
 video-use/.env
+video-use/.venv
 video-use/.venv/
+video-use/.venv-whisper
+video-use/.venv-whisper/
 video-use/**/__pycache__/
 video-use/**/*.pyc
 video-use/**/*.egg-info/
-video-use/.venv-whisper/
 src/vendor/mediapipe/

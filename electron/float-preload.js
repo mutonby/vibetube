@@ -7,4 +7,7 @@ contextBridge.exposeInMainWorld('floatbar', {
   onElapsed: (cb) => ipcRenderer.on('rec-elapsed', (_e, p) => cb(p)),
   onInit: (cb) => ipcRenderer.on('float-init', (_e, p) => cb(p)),
   onIdle: (cb) => ipcRenderer.on('float-idle', (_e, p) => cb(p)),
+  onWarn: (cb) => ipcRenderer.on('float-warn', (_e, m) => cb(m)),
+  requestPreview: () => ipcRenderer.send('float-preview-request'),
+  onPreview: cb => ipcRenderer.on('float-preview-frame', (_e, bytes) => cb(bytes)),
 })

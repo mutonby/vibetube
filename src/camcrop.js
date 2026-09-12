@@ -8,8 +8,8 @@
 // (audio is passed through untouched). The crop rect is normalised [0..1] over
 // the source frame, so it's resolution-independent.
 //
-// Primary path = Insertable Streams (MediaStreamTrackProcessor + VideoFrame
-// `visibleRect`): frame-driven, so it keeps producing frames while the recorder
+// Primary path = Insertable Streams with a rasterized crop: frame-driven,
+// so it keeps producing frames while the recorder
 // window is hidden during capture — the same reason CamPipe uses this API.
 // Fallback path = a <canvas> + requestVideoFrameCallback compositor for engines
 // without Insertable Streams.
@@ -66,28 +66,36 @@ class CamCrop {
   _startInsertable(track) {
     const proc = new MediaStreamTrackProcessor({ track })
     const gen = new MediaStreamTrackGenerator({ kind: 'video' })
+    const canvas = new OffscreenCanvas(this.outDims.width, this.outDims.height)
+    const ctx = canvas.getContext('2d', { alpha: false })
+    this._canvas = canvas
     const self = this
     const ts = new TransformStream({
       transform(frame, ctrl) {
-        // visibleRect is expressed in the frame's CODED coordinate space.
-        const W = frame.codedWidth || frame.displayWidth
-        const H = frame.codedHeight || frame.displayHeight
+        const W = frame.displayWidth
+        const H = frame.displayHeight
         const r = self.rect
         let x = Math.round(r.x * W), y = Math.round(r.y * H)
         let w = Math.round(r.w * W), h = Math.round(r.h * H)
-        // keep the rect inside the frame and even-sized (encoders prefer even)
         x = clamp(x, 0, W - 2); y = clamp(y, 0, H - 2)
         w = (clamp(w, 2, W - x)) & ~1; h = (clamp(h, 2, H - y)) & ~1
         try {
-          const cropped = new VideoFrame(frame, { visibleRect: { x, y, width: w, height: h }, timestamp: frame.timestamp })
-          frame.close()
+          // Materialize the pixels. Passing an RGBA texture with only a
+          // visibleRect crop to MediaRecorder produced black VP9 frames.
+          if (canvas.width !== w) canvas.width = w
+          if (canvas.height !== h) canvas.height = h
+          ctx.drawImage(frame, x, y, w, h, 0, 0, w, h)
+          const cropped = new VideoFrame(canvas, { timestamp: frame.timestamp, duration: frame.duration ?? undefined })
+          self.outDims = { width: w, height: h }
           ctrl.enqueue(cropped)
         } catch (e) {
-          ctrl.enqueue(frame) // on any failure, pass the frame through uncropped
-        }
+          ctrl.error(e)
+          window.dispatchEvent(new CustomEvent('camera-effect-error', { detail: 'Falló el recorte de cámara: ' + e.message }))
+        } finally { frame.close() }
       },
     })
-    proc.readable.pipeThrough(ts).pipeTo(gen.writable).catch(() => {})
+    this._abort = new AbortController()
+    proc.readable.pipeThrough(ts, { signal: this._abort.signal }).pipeTo(gen.writable, { signal: this._abort.signal }).catch(() => {})
     this._proc = proc
     this._gen = gen
     const out = new MediaStream([gen])
@@ -124,7 +132,9 @@ class CamCrop {
   }
 
   stop() {
-    if (this._proc) { try { this._proc.readable.cancel() } catch { /* ignore */ } this._proc = null }
+    // The readable is locked by the pipe: abort the pipe (cancel() would throw).
+    if (this._abort) { try { this._abort.abort() } catch { /* ignore */ } this._abort = null }
+    this._proc = null
     if (this._gen) { try { this._gen.stop() } catch { /* ignore */ } this._gen = null }
     if (this._vid) {
       if (this._rvfc && this._vid.cancelVideoFrameCallback) { try { this._vid.cancelVideoFrameCallback(this._rvfc) } catch { /* ignore */ } }

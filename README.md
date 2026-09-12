@@ -16,6 +16,8 @@ record-studio (graba N clips)  ──►  video-use (decide planos + corta + sub
 - Node.js 22+ y npm
 - macOS (usa `desktopCapturer` de Electron + permiso de Grabación de pantalla)
 - `ffmpeg` en el sistema (para los posters del histórico; Homebrew recomendado)
+- Para montajes y guiones con IA: **Claude Code o Codex CLI**, instalado e identificado
+  con tu cuenta. La app usa la configuración y autenticación de la CLI elegida.
 - Para la edición posterior: la skill `video-use` con `ffmpeg` y `ELEVENLABS_API_KEY`.
 
 ## Uso
@@ -24,6 +26,32 @@ record-studio (graba N clips)  ──►  video-use (decide planos + corta + sub
 npm install
 npm start
 ```
+
+### Elegir Claude Code o Codex
+
+En la barra superior, **Agente → Codex** selecciona Codex para los próximos montajes,
+iteraciones, análisis de estilo y guiones. La elección se guarda al cerrar la app;
+Claude Code sigue siendo la opción inicial. Las tareas y terminales ya abiertas
+continúan con el agente con el que arrancaron.
+
+Para usar Codex, instala su CLI si hace falta e inicia sesión desde una terminal:
+
+```bash
+npm install -g @openai/codex
+codex login
+```
+
+La edición automática usa `codex exec --json` y la terminal integrada abre Codex
+interactivo. Ambos usan `workspace-write` con red habilitada para investigación y
+descargas; las tareas automáticas no solicitan aprobaciones y la terminal permite
+aprobar acciones. El modelo se hereda de tu configuración de Codex. Consulta el
+[modo no interactivo de Codex](https://learn.chatgpt.com/docs/non-interactive-mode).
+
+Cada proyecto conserva una conversación por proveedor: al cambiar a Codex se crea
+su propia conversación y puedes volver después a la de Claude. La terminal interactiva
+continúa la última sesión del proveedor en esa carpeta. El brief de montaje se escribe
+en `AGENTS.md` para Codex y en `CLAUDE.md` para Claude, preservando las instrucciones
+existentes. Ambos reciben la ruta de la skill `video-use` incluida en esta app.
 
 ### Pestaña «Proyectos»
 1. Elige la **carpeta raíz** donde vivirán todos los proyectos.
@@ -73,3 +101,78 @@ Abre la carpeta del proyecto con la skill `video-use` y pídele:
 El audio continuo sale siempre de `webcam.webm`; solo cambia el plano de vídeo.
 Los detalles del contrato (mapear varios clips, formato del EDL multicam) están en
 [`HANDOFF.md`](./HANDOFF.md).
+
+
+## Guiones (pestaña «Guiones»)
+
+1. **Mi estilo**: pega tu canal → el agente elegido (headless) baja ~15 transcripciones largas con
+   `yt-dlp` y escribe `_scripts/style_profile.md` + `_scripts/pace.json` (palabras/min reales).
+   «Actualizar» solo añade los vídeos nuevos al corpus.
+2. **Nuevo guion**: tema (puede ser una URL) + brief (duración, formato, tipo, demo, CTA, evitar,
+   puntos clave). El agente investiga en la web, escribe en tu voz con un objetivo de
+   palabras calculado a tu ritmo, propone **3 ganchos** y deja las **fuentes** en
+   `drafts/<id>.sources.md` para que compruebes las cifras.
+3. **Guion**: editar, «Ganchos» (5 alternativas), «Reescribir» (guarda versión previa en
+   `drafts/versions/`), «Grabar con este guion» → crea el proyecto con `script.md` y guarda el
+   par borrador→final en `_scripts/feedback/`, que el agente usa en los siguientes guiones para
+   aprender cómo corriges.
+
+## Robustez de grabación
+
+- El fondo usa **MatAnyone2Kit** en Apple Silicon cuando se ha ejecutado
+  `npm run build:matting`. Conserva memoria entre fotogramas y usa la máscara
+  completa de persona de Vision para inicializarse. Los demás equipos usan
+  LiveKit Track Processors 0.8.0. No hay filtros propios de pelo o silla.
+  La cámara, su grabación y la barra flotante comparten el resultado procesado.
+  Los modelos se ejecutan localmente, sin cuenta ni envío de vídeo.
+  La cámara original y su audio no se
+  detienen al cerrar el efecto. Los errores del efecto se comunican; no se
+  cambia silenciosamente a otro motor.
+  El respaldo se conserva en las muestras probadas, pero no se garantiza para
+  cualquier silla o iluminación. Siguen siendo posibles errores de recorte.
+  Por defecto se graba la cámara procesada de la previsualización.
+  «Guardar cámara original» permite conservar la habitación para aplicar el
+  fondo después durante el montaje.
+- **Calibrar persona y silla** permite señalar el torso y el respaldo en una
+  imagen fija. Con EdgeSAM instalado, esa selección inicializa MatAnyone2 para
+  conservar ambos. La cámara sigue visible mientras se calcula; cancelar no
+  altera el recorte actual. Si sales y vuelves, se avisa para repetir la selección.
+  Instalación de los modelos y pruebas: [native/README.md](native/README.md).
+- Los chunks del MediaRecorder se escriben a disco cada ~1 s (`clips/clip_NN/*.part.webm`).
+  Si la app muere grabando, el proyecto muestra la toma sin cerrar y permite **recuperarla**.
+- Al guardar, `ffprobe` mide la duración real de cada pista y marca el clip `truncated`/`empty`
+  si no coincide con lo esperado (chip rojo en la tarjeta). Un watchdog avisa en la barra
+  flotante si un grabador deja de entregar datos >3 s.
+- Aviso de espacio en disco (<2 GB) antes de grabar; confirmación al cerrar en mitad de una toma.
+- Atajos: `⌘R` grabar/parar (vista Grabar), `⌘⇧P` pausar, `Esc` cerrar modales; durante la toma
+  `⌘⇧1` pausa, `⌘⇧2` termina clip, `⌘⇧3` descarta y regraba.
+
+## Agente headless
+
+- Timeout de inactividad (15 min sin eventos) y tope de 3 h; cancelar mata el grupo de procesos
+  (ffmpeg/python incluidos). Las ejecuciones se guardan en `project.json.agentRuns`
+  con el proveedor, duración y métricas disponibles: coste/turnos para Claude y tokens
+  para Codex (su CLI no comunica un coste en dólares). Log completo en `edit/_agent.log`
+  (⋯ → «Ver log completo»).
+- Los agentes huérfanos de una ejecución anterior se matan al arrancar (`userData/agents.json`).
+- El modelo se hereda de la configuración de la CLI elegida (`~/.claude/settings.json`
+  o `$CODEX_HOME/config.toml`, normalmente `~/.codex/config.toml`); no se fija con `--model`.
+- La API key de HeyGen se lee de `~/.config/record-studio/.env` o, si no existe, del `.env` de avatar-muton.
+
+## Desarrollo
+
+```bash
+npm run check   # node --check de todos los ficheros
+npm test        # node:test (util, prompts, agent events, rsmedia)
+npm run test:camera # efectos, cambio de fondo y recorte en Electron, sin cámara real
+npm run build:camera # empaqueta LiveKit intacto y copia su WASM local
+npm run build:matting # instala MatAnyone2 local para Apple Silicon (Swift/Core ML)
+# Reprocesar una grabación local; no abre cámara ni micrófono:
+./node_modules/.bin/electron test/manual/camera-replay.cjs muestra.webm /tmp/camera-check
+# Probar desenfoque en vez de sustituir el fondo:
+./node_modules/.bin/electron test/manual/camera-replay.cjs muestra.webm /tmp/camera-blur blur
+```
+MatAnyone2 requiere compilar Swift/Core ML una vez. Revisión, corrección de
+inicialización y licencias del código y modelos: [native](native/README.md).
+Alternativa para otros equipos: [LiveKit](src/vendor/livekit/README.md).
+Ajustes de la app en `~/Library/Application Support/record-studio/settings.json`.

@@ -105,9 +105,20 @@ def transcribe_one(
             print(f"cached: {out_path.name}")
         return out_path
 
+    audio_source = video
+    enhanced_candidates = [
+        video.parent / f"{video.stem}_enhanced.wav",
+        video.parent / "webcam_enhanced.wav",
+    ]
+    for c in enhanced_candidates:
+        if c.exists() and c.stat().st_size > 1000:
+            audio_source = c
+            break
+
     if verbose:
-        print(f"  whisper ({model}) transcribiendo {video.name}…", flush=True)
-    flat, detected = transcribe_words(video, model, language)
+        src_label = f"{video.name} (usando {audio_source.name})" if audio_source != video else video.name
+        print(f"  whisper ({model}) transcribiendo {src_label}…", flush=True)
+    flat, detected = transcribe_words(audio_source, model, language)
     full_text = " ".join(w["text"] for w in flat)
     payload = to_scribe_schema(flat, detected, full_text)
 

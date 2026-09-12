@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: mediastream: rsmedia:; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' blob: data:; style-src 'self' 'unsafe-inline';" />
+          content="default-src 'self'; img-src 'self' data: blob: rsmedia:; media-src 'self' blob: mediastream: rsmedia:; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' blob: data:; style-src 'self' 'unsafe-inline';" />
     <title>Record Studio</title>
     <link rel="stylesheet" href="vendor/xterm/xterm.css" />
     <link rel="stylesheet" href="styles.css" />
@@ -52,6 +52,11 @@
       </nav>
       <div id="crumb" class="crumb"></div>
       <div class="topbar-right">
+        <label for="agentProvider">Agente</label>
+        <select id="agentProvider" class="mini" title="Agente para nuevos montajes y guiones">
+          <option value="claude">Claude Code</option>
+          <option value="codex">Codex</option>
+        </select>
         <span id="status" class="status">listo</span>
         <span id="timer" class="timer hidden">00:00</span>
       </div>
@@ -64,10 +69,10 @@
         <div class="hero">
           <div class="hero-badge"><span class="dot"></span> RECORD STUDIO</div>
           <h1>Graba, monta y comparte vídeos con IA</h1>
-          <p class="hero-sub">Graba tu pantalla y tu cámara a la vez. Claude Code los edita por ti: elige planos, corta, pone subtítulos y difumina el fondo.</p>
+          <p class="hero-sub">Graba tu pantalla y tu cámara a la vez. Claude Code o Codex los editan por ti: eligen planos, cortan, ponen subtítulos y difuminan el fondo.</p>
           <div class="steps3">
             <div class="step3"><span class="n">1</span><b>Graba</b>pantalla + cámara</div>
-            <div class="step3"><span class="n">2</span><b>Monta</b>Claude edita el vídeo</div>
+            <div class="step3"><span class="n">2</span><b>Monta</b>tu agente edita el vídeo</div>
             <div class="step3"><span class="n">3</span><b>Comparte</b>listo para publicar</div>
           </div>
           <button id="onbChoose" class="btn-primary big"><svg class="icon"><use href="#i-folder"/></svg> Elegir carpeta para empezar</button>
@@ -82,6 +87,7 @@
           <div class="root-row">
             <span class="lbl">Guardando en:</span>
             <span id="rootPath" class="proj-path">—</span>
+            <select id="recentRoots" class="mini hidden" title="Cambiar a otra carpeta reciente"><option value="">recientes…</option></select>
             <button id="chooseRoot" class="btn-secondary"><svg class="icon"><use href="#i-folder"/></svg> Cambiar…</button>
           </div>
         </div>
@@ -124,8 +130,10 @@
                 <h3 id="clipsTitle">Clips</h3>
                 <span class="card-help">El material en bruto. Graba uno o varios clips.</span>
                 <span class="card-spacer"></span>
+                <button id="enhanceClipsBtn" class="btn-secondary" title="Mejorar audio de todos los clips con NVIDIA Studio Voice"><svg class="icon icon-sm"><use href="#i-sparkle"/></svg> Mejorar audio (IA)</button>
                 <button id="recHere" class="btn-rec"><svg class="icon"><use href="#i-record"/></svg> Grabar clip</button>
               </div>
+              <div id="orphansBox" class="orphans hidden"></div>
               <div id="clipsGrid" class="clips-grid"></div>
             </div>
           </section>
@@ -142,6 +150,7 @@
               </div>
               <label class="opt switch"><input type="checkbox" id="optSubs" checked /> Subtítulos</label>
               <label class="opt switch"><input type="checkbox" id="optSfx" /> SFX</label>
+              <label class="opt switch"><input type="checkbox" id="optVoice" checked /> Voz de estudio (NVIDIA)</label>
               <label class="opt switch"><input type="checkbox" id="optCrop" /> Quitar barra de menú</label>
               <div class="opt"><span class="opt-lbl">Cámara</span>
                 <span class="pip" id="pipPicker" title="Esquina de la cámara (PiP)">
@@ -167,18 +176,20 @@
                   <span class="editor-title"><svg class="icon"><use href="#i-sparkle"/></svg> Editor</span>
                   <button id="sessionChip" class="chip session hidden"></button>
                   <span id="editorStatus" class="compose-status"></span>
+                  <span id="editorCost" class="compose-status cost" title="Ejecuciones del agente en este proyecto y coste acumulado"></span>
                   <button id="cancelBtn" class="btn-secondary danger mini hidden"><svg class="icon icon-sm"><use href="#i-x"/></svg> Cancelar</button>
                   <button id="editorAdv" class="btn-tertiary mini" title="Avanzado"><svg class="icon"><use href="#i-more"/></svg></button>
                   <div id="editorAdvMenu" class="menu hidden">
                     <button id="advTermNew"><svg class="icon icon-sm"><use href="#i-terminal"/></svg> Terminal interactiva (sesión nueva)</button>
                     <button id="advTermCont"><svg class="icon icon-sm"><use href="#i-terminal"/></svg> Terminal interactiva (continuar)</button>
                     <button id="advRawLog"><svg class="icon icon-sm"><use href="#i-file-text"/></svg> Ver log crudo</button>
+                    <button id="advAgentLog"><svg class="icon icon-sm"><use href="#i-file-text"/></svg> Ver log completo del agente</button>
                   </div>
                 </div>
                 <div id="editorFeed" class="editor-feed hidden"></div>
                 <div id="editorCta" class="editor-cta">
                   <button id="composeBtn" class="btn-primary big"><svg class="icon"><use href="#i-sparkle"/></svg> Montar vídeo</button>
-                  <span class="hint">Claude Code edita tus clips: transcribe, elige planos, añade gráficos y SFX. Tarda varios minutos.</span>
+                  <span class="hint">El agente elegido edita tus clips: transcribe, elige planos, añade gráficos y SFX. Tarda varios minutos.</span>
                 </div>
                 <div class="editor-input-row">
                   <input id="editorInput" placeholder="Pide un cambio: “más planos de cara”, “cortes más rápidos”…" />
@@ -186,7 +197,7 @@
                 </div>
                 <div id="termPanel" class="term-panel hidden">
                   <div class="term-head">
-                    <span class="term-title"><svg class="icon"><use href="#i-terminal"/></svg> Claude Code — <span id="termProj"></span></span>
+                    <span class="term-title"><svg class="icon"><use href="#i-terminal"/></svg> <span id="termAgent">Agente</span> — <span id="termProj"></span></span>
                     <span id="termStatus" class="term-status"></span>
                     <button id="termClose" class="btn-tertiary"><svg class="icon"><use href="#i-x"/></svg> Cerrar</button>
                   </div>
@@ -258,6 +269,8 @@
               <legend><svg class="icon icon-sm"><use href="#i-video"/></svg> Cámara</legend>
               <label class="devices-lbl">Dispositivo <select id="camSelect"></select></label>
               <label class="blur-toggle switch"><input type="checkbox" id="blurToggle" /> Difuminar fondo</label>
+              <button class="mini" id="recalibrateBg" type="button" aria-describedby="recalibrateHelp" title="Vuelve a calcular el recorte con tu postura y ropa actuales">Recalibrar fondo</button>
+              <button class="mini" id="calibrateSelection" type="button" title="Señala la persona y la silla para conservar ambas">Calibrar persona y silla</button>
               <label class="blur-toggle blur-level" id="blurLevelRow" style="display:none">
                 Intensidad
                 <input type="range" id="blurLevel" min="0" max="100" value="50" />
@@ -269,6 +282,7 @@
                 <span id="bgName" class="bg-name"></span>
                 <button id="bgClear" class="mini" type="button" style="display:none" title="Quitar fondo"><svg class="icon icon-sm"><use href="#i-x"/></svg></button>
               </span>
+              <label class="blur-toggle switch" id="rawRecordRow" style="display:none" title="Guarda la cámara original, incluida la habitación y la silla, para editar el fondo después. Desactivado: graba el fondo que ves en la previsualización."><input type="checkbox" id="rawRecordToggle" /> Guardar cámara original (fondo al montar)</label>
               <label class="blur-toggle switch"><input type="checkbox" id="cropToggle" /> Recortar cámara</label>
               <span class="blur-toggle crop-tools" id="cropTools" style="display:none">
                 Proporción
@@ -280,6 +294,7 @@
                 </span>
                 <button class="mini" id="cropReset" type="button" title="Recuadro completo">Reiniciar</button>
               </span>
+              <p class="hint" id="recalibrateHelp">Si el pelo o la silla se recortan mal, usa «Calibrar persona y silla» antes de grabar.</p>
             </fieldset>
 
             <fieldset class="grp">
@@ -304,12 +319,16 @@
             </fieldset>
           </div>
 
+          <div class="rec-window-option">
+            <label class="switch"><input id="keepMainVisible" type="checkbox" aria-describedby="keepMainVisibleHelp"> Mantener interfaz visible al grabar</label>
+            <span id="keepMainVisibleHelp" class="hint">Para grabar esta ventana. Los controles pequeños también aparecerán.</span>
+          </div>
           <div class="rec-bar">
             <button id="recBtn" class="btn-rec big" disabled><svg class="icon"><use href="#i-record"/></svg> Grabar</button>
             <button id="pauseBtn" class="pause" disabled>Pausar</button>
             <button id="stopBtn" class="stop" disabled><svg class="icon"><use href="#i-stop"/></svg> Parar</button>
             <div id="recHint" class="hint">Elige una pantalla a la izquierda para poder grabar.</div>
-            <span class="hint rec-shortcuts">Al grabar, la ventana se oculta (mini-cámara abajo-dcha) · ⌘⇧1 pausar · ⌘⇧2 parar</span>
+            <span class="hint rec-shortcuts">Controles pequeños abajo a la derecha · ⌘⇧1 pausar · ⌘⇧2 parar</span>
           </div>
 
           <div id="doneBar" class="done-bar hidden">
@@ -333,14 +352,15 @@
     <main id="viewScripts" class="scripts-view hidden">
       <section class="panel">
         <div class="panel-head"><div class="head-left"><h2>Guiones</h2></div>
-          <span class="card-help">Escribe guiones en tu propia voz, aprendida de tu canal.</span>
+          <span class="card-help">Escribe guiones en tu propia voz, aprendida de tu canal y de cómo corriges mis borradores.</span>
         </div>
         <div class="scripts-body">
           <section class="card">
-            <div class="card-head"><h3>Mi estilo</h3><span class="card-help">Analizo tu canal de YouTube (solo vídeos largos, no Shorts) para aprender tu voz. Se guarda y no hay que repetirlo.</span></div>
+            <div class="card-head"><h3>Mi estilo</h3><span class="card-help">Analizo tu canal de YouTube (solo vídeos largos, no Shorts) para aprender tu voz y tu ritmo de habla. Se guarda; “Actualizar” solo añade los vídeos nuevos.</span></div>
             <div class="row">
               <input id="channelUrl" class="grow" placeholder="URL de tu canal de YouTube (https://youtube.com/@tu_canal)" />
               <button id="analyzeBtn" class="btn-primary"><svg class="icon"><use href="#i-search"/></svg> Analizar mi canal</button>
+              <button id="updateProfileBtn" class="btn-secondary hidden" title="Añade solo los vídeos nuevos al corpus y actualiza el perfil"><svg class="icon"><use href="#i-refresh"/></svg> Actualizar</button>
             </div>
             <div class="row2">
               <span id="profileStatus" class="profile-status">Sin perfil todavía.</span>
@@ -351,26 +371,44 @@
           </section>
 
           <section class="card">
-            <div class="card-head"><h3>Nuevo guion</h3><span class="card-help">Dame el tema y lo escribo en tu estilo.</span></div>
-            <textarea id="topicBox" class="topic" placeholder="¿De qué va el vídeo? Tema, ideas, puntos clave… Puedes pegar una URL (repo, web) y la leeré para basarme en lo que realmente es."></textarea>
-            <div class="row">
+            <div class="card-head"><h3>Nuevo guion</h3><span class="card-help">Dame el tema y un brief corto; investigo, escribo en tu estilo y te dejo 3 ganchos y las fuentes.</span></div>
+            <textarea id="topicBox" class="topic" placeholder="¿De qué va el vídeo? Tema, ángulo… Puedes pegar una URL (repo, web) y la leeré para basarme en lo que realmente es."></textarea>
+            <textarea id="keyPoints" class="topic short" placeholder="Puntos clave que quieres que salgan sí o sí (opcional, uno por línea)"></textarea>
+            <div class="row wrap">
               <label class="mini-opt">Duración
-                <select id="scrDuration"><option value="">auto</option><option>30s</option><option>1 min</option><option>3 min</option><option>5 min</option></select>
+                <select id="scrDuration"><option value="">auto</option><option>30s</option><option>1 min</option><option>3 min</option><option>5 min</option><option>8 min</option><option>10 min</option><option>15 min</option></select>
               </label>
               <label class="mini-opt">Formato
                 <select id="scrFormat"><option value="">—</option><option>YouTube</option><option>Short / Reel</option><option>TikTok</option></select>
               </label>
+              <label class="mini-opt">Tipo
+                <select id="scrGoal"><option value="">—</option><option>tutorial / cómo se hace</option><option>opinión / análisis</option><option>build in public / números reales</option><option>lanzamiento de producto o herramienta</option><option>lista / comparativa</option></select>
+              </label>
+              <label class="mini-opt">Demo en pantalla
+                <select id="scrDemo"><option value="">auto</option><option value="yes">sí</option><option value="no">no, solo cámara</option></select>
+              </label>
+            </div>
+            <div class="row wrap">
+              <input id="scrCta" class="grow" placeholder="CTA concreta: repo en la descripción, newsletter, probar la herramienta… (opcional)" />
+              <input id="scrAvoid" class="grow" placeholder="Evitar / no mencionar (opcional)" />
+            </div>
+            <div class="row">
               <button id="generateBtn" class="btn-primary big"><svg class="icon"><use href="#i-pencil"/></svg> Generar guion</button>
               <span id="genStatus" class="compose-status"></span>
             </div>
           </section>
 
           <section class="card">
-            <div class="card-head"><h3>Guion</h3><span id="scriptName" class="card-help"></span></div>
+            <div class="card-head"><h3>Guion</h3><span id="scriptName" class="card-help"></span><span id="scriptMeta" class="card-help meta-right"></span>
+              <select id="versionSel" class="mini hidden" title="Restaurar una versión anterior"><option value="">versiones…</option></select>
+            </div>
+            <div id="hooksBox" class="hooks-box hidden"></div>
             <textarea id="scriptOut" class="script-out" placeholder="Aquí aparecerá tu guion. Puedes editarlo a mano."></textarea>
-            <div class="row">
+            <details id="sourcesBox" class="sources-box hidden"><summary>Fuentes y datos usados — comprueba las cifras antes de grabarlas</summary><pre id="sourcesText"></pre></details>
+            <div class="row wrap">
               <button id="saveScriptBtn" class="btn-secondary"><svg class="icon"><use href="#i-save"/></svg> Guardar</button>
               <button id="copyScriptBtn" class="btn-secondary"><svg class="icon"><use href="#i-copy"/></svg> Copiar</button>
+              <button id="hooksBtn" class="btn-secondary" title="5 ganchos alternativos para este guion"><svg class="icon"><use href="#i-sparkle"/></svg> Ganchos</button>
               <button id="recordScriptBtn" class="btn-rec"><svg class="icon"><use href="#i-record"/></svg> Grabar con este guion</button>
               <input id="scriptFeedback" class="grow" placeholder="Ajustar: 'más corto', 'gancho más fuerte', 'añade un ejemplo'…" />
               <button id="rewriteBtn" class="btn-primary"><svg class="icon"><use href="#i-refresh"/></svg> Reescribir</button>
@@ -409,14 +447,34 @@
       </div>
     </div>
 
+    <dialog id="cameraCalibration" class="camera-calibration" aria-labelledby="calibrationTitle">
+      <h3 id="calibrationTitle">Conservar persona y silla</h3>
+      <p>Señala ambas en esta imagen fija. El recorte seguirá tus movimientos al aplicar la selección.</p>
+      <p id="calibrationStep" aria-live="polite"></p>
+      <canvas id="calibrationFrame" tabindex="0" role="button" aria-label="Seleccionar persona y silla. Usa el ratón, o flechas y Enter." aria-describedby="calibrationStep"></canvas>
+      <div class="modal-actions">
+        <button id="calibrationReset" class="btn-secondary" type="button">Borrar puntos</button>
+        <button id="calibrationCancel" class="btn-secondary" type="button">Cancelar</button>
+        <button id="calibrationApply" class="btn-primary" type="button" disabled>Aplicar recorte</button>
+      </div>
+    </dialog>
+
     <!-- Toasts -->
     <div id="toastHost" class="toast-host"></div>
 
-    <script src="vendor/vb/virtual-background.js"></script>
+    <script src="vendor/livekit/livekit.js"></script>
+    <script src="livekit-campipe.js"></script>
+    <script src="matanyone-campipe.js"></script>
     <script src="campipe.js"></script>
     <script src="camcrop.js"></script>
     <script src="vendor/xterm/xterm.js"></script>
     <script src="vendor/xterm/addon-fit.js"></script>
     <script src="renderer.js"></script>
+    <script src="float-preview.js"></script>
+    <script src="recording-audio-sync.js"></script>
+    <script src="recording.js"></script>
+    <script src="camera-calibration.js"></script>
+    <script src="scripts-view.js"></script>
+    <script src="wire.js"></script>
   </body>
 </html>

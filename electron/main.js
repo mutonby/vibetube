@@ -1,45 +1,60 @@
 'use strict'
 
-const { app, BrowserWindow, ipcMain, desktopCapturer, dialog, shell, protocol, net, globalShortcut, screen } = require('electron')
+const { app, BrowserWindow, ipcMain, desktopCapturer, dialog, shell, globalShortcut, screen } = require('electron')
 const path = require('path')
 const fs = require('fs')
-const { pathToFileURL } = require('url')
 const { spawnSync, spawn } = require('child_process')
-const { Readable } = require('stream')
 
-// Native PTY for the embedded Claude Code terminal. Rebuilt against Electron's
+const util = require('./util')
+const { stamp, slugify, uniqueDir, findBin, readJson, writeJson, isUnder, freeBytes, fmtBytes, wordCount } = util
+const media = require('./media-protocol')
+const settings = require('./settings')
+const providers = require('./providers')
+const agent = require('./agent')
+const prompts = require('./prompts')
+require('./matting').install(ipcMain, app)
+const { DEFAULT_OPTS, normAspect } = prompts
+
+// Native PTY for the embedded agent terminal. Rebuilt against Electron's
 // ABI (see package.json postinstall). If it can't load, the terminal falls back
 // to opening the system Terminal instead of breaking.
 let pty = null
 try { pty = require('node-pty-prebuilt-multiarch') }
 catch (e) { console.error('[pty] node-pty no cargó, la terminal usará Terminal.app:', e.message) }
 
-// The renderer is served over file:// (loadFile) and the background-blur
-// library (vendor/vb) runs its segmenter in a Web Worker loaded by URL —
-// Chromium blocks file:// workers unless this switch is set.
+// Allow the file:// renderer to load the bundled camera model and WASM locally.
 app.commandLine.appendSwitch('allow-file-access-from-files')
-
-const MIME = {
-  '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm',
-  '.m4v': 'video/mp4', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
-  '.m4a': 'audio/mp4', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.png': 'image/png', '.gif': 'image/gif', '.srt': 'text/plain',
-}
 
 let mainWindow = null
 let floatWindow = null
 let tpWindow = null
-let ptyProc = null // the embedded Claude Code terminal's PTY (one at a time)
-let FFMPEG = null
-let CLAUDE = null
+let ptyProc = null // the embedded agent terminal's PTY (one at a time)
 
-// key -> { status: 'running'|'done'|'error'|'cancelled', log: string[], child, error, result }
-// key is a project dir (compose/iterate) or a scripts key ('style' / 'script').
-const agentJobs = new Map()
+media.registerSchemes()
 
-protocol.registerSchemesAsPrivileged([
-  { scheme: 'rsmedia', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
-])
+// ---- rutas permitidas (seguridad IPC) ---------------------------------------
+// El renderer solo puede leer/escribir dentro de las carpetas raíz de proyectos
+// que el usuario ha elegido (actual + recientes) y de los fondos de la app.
+
+function allowedRoots() {
+  const list = [settings.get('root'), ...(settings.get('recentRoots', []) || [])].filter(Boolean)
+  return [...new Set(list)]
+}
+function registerRoot(dir) {
+  if (!dir) return
+  settings.touchRecentRoot(dir)
+  media.allowRoot(dir)
+}
+function guardPath(p, what = 'ruta') {
+  if (typeof p !== 'string' || !p) throw new Error(`${what} inválida`)
+  if (!allowedRoots().some((r) => isUnder(r, p))) throw new Error(`${what} fuera de la carpeta de proyectos: ${p}`)
+  return p
+}
+function guardRoot(root) {
+  if (typeof root !== 'string' || !root) throw new Error('carpeta raíz inválida')
+  if (!allowedRoots().includes(root)) registerRoot(root) // elegida con el diálogo → válida
+  return root
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -53,6 +68,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
       backgroundThrottling: false, // keep MediaRecorder/timers alive while hidden
     },
   })
@@ -74,58 +90,38 @@ function createWindow() {
       .then((sources) => callback(sources[0] ? { video: sources[0], audio: 'loopback' } : {}))
       .catch(() => callback({}))
   }, { useSystemPicker: false })
+
+  // No cerrar la ventana en mitad de una grabación sin confirmar.
+  mainWindow.on('close', (e) => {
+    if (!recordingActive) return
+    const r = dialog.showMessageBoxSync(mainWindow, {
+      type: 'warning', buttons: ['Seguir grabando', 'Descartar y cerrar'], defaultId: 0, cancelId: 0,
+      message: 'Hay una grabación en curso', detail: 'Si cierras ahora, la toma actual se perderá.',
+    })
+    if (r === 0) e.preventDefault()
+  })
 }
 
 app.whenReady().then(() => {
-  // Serve local media WITH HTTP Range support so the <video> player can seek.
-  // (net.fetch on a file:// URL ignores Range and returns the whole file as 200,
-  // which makes the scrub bar unable to jump forward.)
-  protocol.handle('rsmedia', async (request) => {
-    try {
-      const u = new URL(request.url)
-      const filePath = decodeURIComponent(u.pathname.replace(/^\//, ''))
-      const stat = fs.statSync(filePath)
-      const size = stat.size
-      const type = MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream'
-      const range = request.headers.get('Range') || request.headers.get('range')
-
-      const base = { 'Accept-Ranges': 'bytes', 'Content-Type': type, 'Cache-Control': 'no-cache' }
-
-      const m = range && /bytes=(\d*)-(\d*)/.exec(range)
-      if (m && (m[1] || m[2])) {
-        let start = m[1] ? parseInt(m[1], 10) : 0
-        let end = m[2] ? parseInt(m[2], 10) : size - 1
-        if (m[1] === '' && m[2]) { start = Math.max(0, size - parseInt(m[2], 10)); end = size - 1 } // suffix range
-        if (isNaN(start) || isNaN(end) || start > end || start >= size) {
-          return new Response(null, { status: 416, headers: { ...base, 'Content-Range': `bytes */${size}` } })
-        }
-        end = Math.min(end, size - 1)
-        const stream = Readable.toWeb(fs.createReadStream(filePath, { start, end }))
-        return new Response(stream, {
-          status: 206,
-          headers: { ...base, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Length': String(end - start + 1) },
-        })
-      }
-
-      const stream = Readable.toWeb(fs.createReadStream(filePath))
-      return new Response(stream, { status: 200, headers: { ...base, 'Content-Length': String(size) } })
-    } catch {
-      return new Response('not found', { status: 404 })
-    }
-  })
-
+  media.install()
+  for (const r of allowedRoots()) media.allowRoot(r)
+  media.allowRoot(path.join(__dirname, '..', 'src', 'backgrounds'))
+  settings.installIpc()
+  agent.cleanupOrphans()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
 
-app.on('will-quit', () => { globalShortcut.unregisterAll(); stopTerminal() })
+app.on('will-quit', () => { globalShortcut.unregisterAll(); stopTerminal(); agent.cancelAll() })
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
 // ---- Floating recording bar + global shortcuts -----------------------------
+
+let recordingActive = false
 
 function createFloating(initState) {
   if (floatWindow) return
@@ -144,6 +140,7 @@ function createFloating(initState) {
       preload: path.join(__dirname, 'float-preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   })
   floatWindow.setAlwaysOnTop(true, 'screen-saver')
@@ -166,13 +163,21 @@ function relayControl(which) {
 }
 
 ipcMain.on('recording-started', (_e, payload) => {
-  if (mainWindow) { try { mainWindow.setContentProtection(true) } catch { /* ignore */ } mainWindow.hide() }
+  recordingActive = true
+  if (mainWindow && !payload?.continuing) {
+    const keepVisible = payload?.keepMainVisible === true
+    try { mainWindow.setContentProtection(!keepVisible) } catch { /* ignore */ }
+    if (keepVisible) mainWindow.show()
+    else mainWindow.hide()
+  }
   createFloating(payload)
   globalShortcut.register('CommandOrControl+Shift+1', () => relayControl('pause'))
   globalShortcut.register('CommandOrControl+Shift+2', () => relayControl('stop'))
+  globalShortcut.register('CommandOrControl+Shift+3', () => relayControl('restart'))
 })
 
 ipcMain.on('recording-stopped', () => {
+  recordingActive = false
   globalShortcut.unregisterAll()
   destroyFloating()
   if (mainWindow) { try { mainWindow.setContentProtection(false) } catch { /* ignore */ } mainWindow.show(); mainWindow.focus() }
@@ -183,33 +188,48 @@ ipcMain.on('rec-elapsed', (_e, payload) => {
 })
 
 // A clip was saved but the user stays in "floating" mode to record more clips:
-// keep the main window hidden and just flip the floating bar to its idle UI.
+// preserve main-window visibility and flip the floating bar to its idle UI.
 ipcMain.on('float-idle', (_e, payload) => {
+  recordingActive = false
   if (floatWindow) floatWindow.webContents.send('float-idle', payload || {})
+})
+
+// Avisos críticos durante la toma (la ventana principal está oculta).
+ipcMain.on('float-warn', (_e, msg) => {
+  if (floatWindow) { try { floatWindow.webContents.send('float-warn', String(msg || '')) } catch { /* gone */ } }
 })
 
 // from the floating bar buttons
 ipcMain.on('float-control', (_e, which) => relayControl(which))
 
-// ---- Embedded Claude Code terminal (interactive montage session) -----------
-// The "✨ Componer" button opens a REAL interactive `claude` in the project dir
-// via a PTY, streamed into an xterm panel. It starts in PLAN MODE with Opus 4.8
-// and a seed prompt: Claude proposes the montage plan, the user approves, it
-// executes, and the user can keep chatting in the SAME session afterwards.
+ipcMain.on('float-preview-request', event => {
+  if (floatWindow && event.sender === floatWindow.webContents && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('float-preview-request')
+  }
+})
+ipcMain.on('float-preview-frame', (event, bytes) => {
+  if (mainWindow && event.sender === mainWindow.webContents && floatWindow && !floatWindow.isDestroyed() &&
+      bytes instanceof ArrayBuffer && bytes.byteLength <= 512 * 1024) {
+    floatWindow.webContents.send('float-preview-frame', bytes)
+  }
+})
+
+// ---- Embedded agent terminal (interactive montage session) ----------------
+// Starts the selected CLI in the project directory with its montage brief.
+// Each provider inherits its own model configuration.
 
 function stopTerminal() {
   if (ptyProc) { try { ptyProc.kill() } catch { /* gone */ } ptyProc = null }
 }
 
 // Fallback when the native PTY isn't available: open the system Terminal running
-// claude. Sources avatar-muton/.env so the HeyGen key is present without copying
-// the secret into a new file.
-function openSystemTerminal(dir, claude, args) {
+// the selected CLI. Sources the .env so the HeyGen key is present without copying the secret.
+function openSystemTerminal(dir, binary, args) {
   try {
     const q = (s) => `'${String(s).replace(/'/g, "'\\''")}'`
-    const line = `cd ${q(dir)} && ${q(claude)} ${args.map(q).join(' ')}`
+    const line = `cd ${q(dir)} && ${q(binary)} ${args.map(q).join(' ')}`
     const script = '#!/bin/bash\n'
-      + 'set -a; [ -f "$HOME/Documents/avatar-muton/.env" ] && . "$HOME/Documents/avatar-muton/.env"; set +a\n'
+      + 'set -a; [ -f "$HOME/.config/record-studio/.env" ] && . "$HOME/.config/record-studio/.env"; [ -f "$HOME/Documents/avatar-muton/.env" ] && . "$HOME/Documents/avatar-muton/.env"; set +a\n'
       + line + '\n'
     const f = path.join(app.getPath('temp'), `rs-terminal-${stamp()}.command`)
     fs.writeFileSync(f, script, { mode: 0o755 })
@@ -219,30 +239,30 @@ function openSystemTerminal(dir, claude, args) {
 }
 
 function startTerminal({ dir, resume, opts, cols, rows } = {}) {
-  const claude = claudePath()
-  if (!claude) return { ok: false, error: 'No encuentro la CLI `claude` (Claude Code) en el PATH.' }
+  const provider = agent.selectedProvider()
+  const binary = agent.agentPath(provider)
+  if (!binary) return { ok: false, error: `No encuentro la CLI \`${provider}\`. Instálala e inicia sesión en una terminal.` }
   if (!dir) return { ok: false, error: 'proyecto sin carpeta' }
-  ensureProjectClaudeMd(dir, opts)
+  guardPath(dir, 'carpeta del proyecto')
+  try { providers.writeProjectInstructions(dir, provider, prompts.montageBrief(opts)) }
+  catch (e) { return { ok: false, error: `No pude guardar las instrucciones: ${e.message}` } }
   stopTerminal()
 
   const seed = [
-    'Eres el editor de este proyecto record-studio; sigue el CLAUDE.md de esta carpeta.',
+    `Eres el editor de este proyecto record-studio; sigue el ${providers.instructionsFile(provider)} de esta carpeta.`,
     'Primero transcribe e inspecciona los clips y ENSÉÑAME EL PLAN de montaje (planos, gráficos,',
-    'SFX/música, subtítulos por formato). Cuando lo apruebe, ejecútalo y genera edit/final.mp4',
-    '(16:9, con .srt al lado) y edit/final_9x16.mp4 (9:16, subtítulos quemados). Habla en español.',
+    `SFX/música, subtítulos por formato). Espera mi aprobación antes de montar. Cuando lo apruebe, genera ${prompts.aspectGoal(opts)}. Habla en español.`,
   ].join(' ')
-  // Fresh compose → plan mode + seed. Continue → resume the SAME conversation.
-  const args = resume
-    ? ['--continue', '--model', 'opus']
-    : [seed, '--model', 'opus', '--permission-mode', 'plan']
-  const env = { ...process.env, ...heygenEnv(), TERM: 'xterm-256color', FORCE_COLOR: '1' }
+  // Fresh compose → request a plan. Continue → resume the provider's conversation.
+  const args = providers.terminalArgs(provider, { resume, seed })
+  const env = { ...process.env, ...agent.heygenEnv(), TERM: 'xterm-256color', FORCE_COLOR: '1' }
 
   if (!pty) {
-    const ok = openSystemTerminal(dir, claude, args)
-    return { ok, fallback: 'system-terminal', error: ok ? null : 'no pude abrir Terminal' }
+    const ok = openSystemTerminal(dir, binary, args)
+    return { ok, provider, fallback: 'system-terminal', error: ok ? null : 'no pude abrir Terminal' }
   }
   try {
-    ptyProc = pty.spawn(claude, args, {
+    ptyProc = pty.spawn(binary, args, {
       name: 'xterm-256color', cols: cols || 100, rows: rows || 30, cwd: dir, env,
     })
   } catch (e) { return { ok: false, error: e.message } }
@@ -251,7 +271,7 @@ function startTerminal({ dir, resume, opts, cols, rows } = {}) {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('terminal-exit', exitCode)
     ptyProc = null
   })
-  return { ok: true }
+  return { ok: true, provider }
 }
 
 ipcMain.handle('terminal-start', (_e, payload) => startTerminal(payload || {}))
@@ -283,6 +303,7 @@ function showTeleprompter(payload) {
         preload: path.join(__dirname, 'tp-preload.js'),
         contextIsolation: true,
         nodeIntegration: false,
+        sandbox: true,
       },
     })
     tpWindow.setAlwaysOnTop(true, 'screen-saver')
@@ -312,7 +333,7 @@ ipcMain.on('tp-close', () => {
 })
 ipcMain.on('tp-load', (_e, scriptPath) => {
   let text = ''
-  try { text = fs.readFileSync(scriptPath, 'utf8') } catch { text = '' }
+  try { guardPath(scriptPath, 'guion'); text = fs.readFileSync(scriptPath, 'utf8') } catch { text = '' }
   if (tpWindow) tpWindow.webContents.send('tp-loaded-window', { path: scriptPath, text })
   if (mainWindow) mainWindow.webContents.send('tp-loaded', { path: scriptPath, text })
 })
@@ -323,73 +344,40 @@ ipcMain.on('tp-save', (_e, payload) => {
 // ---- utils -----------------------------------------------------------------
 
 function ffmpegPath() {
-  if (FFMPEG) return FFMPEG
-  for (const c of ['ffmpeg', '/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/bin/ffmpeg']) {
-    try {
-      const r = spawnSync(c, ['-version'], { stdio: 'ignore' })
-      if (!r.error && r.status === 0) { FFMPEG = c; return c }
-    } catch { /* next */ }
-  }
-  FFMPEG = 'ffmpeg'
-  return FFMPEG
+  return findBin('ffmpeg', ['ffmpeg', '/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/bin/ffmpeg'], '-version') || 'ffmpeg'
+}
+function ffprobePath() {
+  return findBin('ffprobe', ['ffprobe', '/opt/homebrew/bin/ffprobe', '/usr/local/bin/ffprobe', '/usr/bin/ffprobe'], '-version')
 }
 
-function claudePath() {
-  if (CLAUDE !== null) return CLAUDE || null
-  const home = app.getPath('home')
-  for (const c of ['claude', path.join(home, '.local/bin/claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude']) {
-    try {
-      const r = spawnSync(c, ['--version'], { stdio: 'ignore' })
-      if (!r.error && r.status === 0) { CLAUDE = c; return c }
-    } catch { /* next */ }
-  }
-  CLAUDE = ''
-  return null
-}
-
-function stamp() {
-  const d = new Date()
-  const p = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
-}
-
-function slugify(name) {
-  const s = (name || '')
-    .toString()
-    .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^\w\s-]/g, '')
-    .trim()
-    .toLowerCase()
-    .replace(/[\s_-]+/g, '-')
-    .slice(0, 48)
-  return s || 'proyecto'
-}
-
-function uniqueDir(root, slug) {
-  let dir = path.join(root, slug)
-  let n = 2
-  while (fs.existsSync(dir)) { dir = path.join(root, `${slug}-${n}`); n += 1 }
-  return dir
-}
-
-function readProjectJson(dir) {
-  try { return JSON.parse(fs.readFileSync(path.join(dir, 'project.json'), 'utf8')) } catch { return null }
-}
-
+function readProjectJson(dir) { return readJson(path.join(dir, 'project.json'), null) }
 function writeProjectJson(dir, proj) {
   proj.updated = stamp()
-  fs.writeFileSync(path.join(dir, 'project.json'), JSON.stringify(proj, null, 2))
+  delete proj._dir
+  writeJson(path.join(dir, 'project.json'), proj)
 }
 
-function frameDataUrl(videoPath, outJpg, ss = 1) {
+// Poster/thumbnail as an rsmedia:// URL (generated once with ffmpeg and cached
+// next to the media). Antes se devolvía base64 en cada list-projects.
+function frameUrl(videoPath, outJpg, ss = 1) {
   try {
     if (!fs.existsSync(videoPath)) return null
     if (!fs.existsSync(outJpg)) {
       const r = spawnSync(ffmpegPath(), ['-y', '-ss', String(ss), '-i', videoPath, '-frames:v', '1', '-vf', 'scale=480:-2', outJpg], { stdio: 'ignore' })
       if (r.status !== 0 || !fs.existsSync(outJpg)) return null
     }
-    return `data:image/jpeg;base64,${fs.readFileSync(outJpg).toString('base64')}`
+    return `rsmedia://media/${encodeURIComponent(outJpg)}?v=${Math.floor(fs.statSync(outJpg).mtimeMs)}`
+  } catch { return null }
+}
+
+// El .srt que video-use deja junto al mp4 (final.srt, o el primero que haya en edit/).
+function findSrt(dir, base) {
+  const exact = path.join(dir, 'edit', base + '.srt')
+  if (fs.existsSync(exact)) return exact
+  if (base !== 'final') return null
+  try {
+    const any = fs.readdirSync(path.join(dir, 'edit')).filter((f) => f.endsWith('.srt')).sort()
+    return any.length ? path.join(dir, 'edit', any[0]) : null
   } catch { return null }
 }
 
@@ -404,17 +392,15 @@ function summarizeProject(dir) {
   const hasFinal9x16 = fs.existsSync(final9x16Path)
   let previewDataUrl = null
   let preview9x16DataUrl = null
-  if (hasFinal9x16) {
-    preview9x16DataUrl = frameDataUrl(final9x16Path, path.join(dir, 'edit', '_poster_9x16.jpg'), 1)
-  }
-  if (hasFinal) {
-    previewDataUrl = frameDataUrl(finalPath, path.join(dir, 'edit', '_poster.jpg'), 1)
-  } else if (hasFinal9x16) {
-    previewDataUrl = preview9x16DataUrl
-  } else if (clips.length) {
+  if (hasFinal9x16) preview9x16DataUrl = frameUrl(final9x16Path, path.join(dir, 'edit', '_poster_9x16.jpg'), 1)
+  if (hasFinal) previewDataUrl = frameUrl(finalPath, path.join(dir, 'edit', '_poster.jpg'), 1)
+  else if (hasFinal9x16) previewDataUrl = preview9x16DataUrl
+  else if (clips.length) {
     const c0 = clips[0]
-    previewDataUrl = frameDataUrl(path.join(dir, c0.webcam || `clips/${c0.id}/webcam.webm`), path.join(dir, 'clips', c0.id, '_thumb.jpg'), 0.5)
+    previewDataUrl = frameUrl(path.join(dir, c0.webcam || `clips/${c0.id}/webcam.webm`), path.join(dir, 'clips', c0.id, '_thumb.jpg'), 0.5)
   }
+  const runs = proj.agentRuns || []
+  const totalCost = runs.reduce((a, r) => a + (r.cost || 0), 0)
   return {
     dir,
     name: proj.name || path.basename(dir),
@@ -426,506 +412,33 @@ function summarizeProject(dir) {
     finalPath: hasFinal ? finalPath : null,
     hasFinal9x16,
     final9x16Path: hasFinal9x16 ? final9x16Path : null,
+    srtPath: findSrt(dir, 'final'),
+    srt9x16Path: findSrt(dir, 'final_9x16'),
     previewDataUrl,
     preview9x16DataUrl,
     composeOpts: proj.compose_opts || null,
+    hasScript: fs.existsSync(path.join(dir, 'script.md')),
+    warnings: clips.filter((c) => c.status && c.status !== 'ok' && c.status !== 'checking').length,
+    orphanParts: listOrphanParts(dir).length,
+    agentCost: totalCost,
+    agentRuns: runs.length,
   }
-}
-
-// ---- Agent brief builders --------------------------------------------------
-
-const DEFAULT_OPTS = { aspect: 'both', subtitles: true, model: 'medium', pip: 'br', tone: '', cropMenubar: false, sfx: true }
-
-// Normalize the aspect knob: anything that isn't an explicit single format means both.
-function normAspect(opts) {
-  const a = opts && opts.aspect
-  return a === '16:9' || a === '9:16' ? a : 'both'
-}
-// Human list of the requested output file(s), for the prompt goal lines.
-function aspectGoal(opts) {
-  const a = normAspect(opts)
-  if (a === '16:9') return '`edit/final.mp4` (16:9, 1920x1080)'
-  if (a === '9:16') return '`edit/final_9x16.mp4` (9:16, 1080x1920)'
-  return 'BOTH `edit/final.mp4` (16:9, 1920x1080) AND `edit/final_9x16.mp4` (9:16, 1080x1920)'
-}
-
-function optsLines(opts) {
-  const o = { ...DEFAULT_OPTS, ...(opts || {}) }
-  const aspect = normAspect(o)
-  const aspectBlock = {
-    'both': [
-      '- Deliver BOTH resolutions (like avatar-muton does): `edit/final.mp4` in 1920x1080 (horizontal,',
-      '  YouTube) AND `edit/final_9x16.mp4` in 1080x1920 (vertical, Shorts/Reels/TikTok). Same edit,',
-      '  two canvases. render.py auto-reframes multicam for vertical: `fullcam` fills the frame, screen',
-      '  segments (`fullscreen`/`pip`) get a blurred-fill background instead of black bars with a larger',
-      '  cam PiP, and captions ride high above the Shorts/Reels UI — you just set the EDL "output" to',
-      '  each size and render twice. Render any HyperFrames graphic at BOTH output sizes so the cut-in',
-      '  segment matches each canvas.',
-    ].join('\n'),
-    '16:9': [
-      '- Deliver ONLY `edit/final.mp4` in 1920x1080 (16:9 horizontal, YouTube). The user did NOT ask',
-      '  for a vertical version this time — do NOT render `final_9x16.mp4`. Render HyperFrames graphics',
-      '  at 1920x1080 only.',
-    ].join('\n'),
-    '9:16': [
-      '- Deliver ONLY `edit/final_9x16.mp4` in 1080x1920 (9:16 vertical, Shorts/Reels/TikTok). The user',
-      '  did NOT ask for a horizontal version this time — do NOT render `final.mp4`. render.py',
-      '  auto-reframes multicam for vertical: `fullcam` fills the frame, screen segments',
-      '  (`fullscreen`/`pip`) get a blurred-fill background, and captions ride high above the',
-      '  Shorts/Reels UI. Render HyperFrames graphics at 1080x1920 only.',
-    ].join('\n'),
-  }[aspect]
-  const subs169 = [
-    '  * 16:9 `final.mp4` (YouTube): DO NOT burn subtitles into the picture. Render it with',
-    '    `helpers/render.py … --subs-mode sidecar` so a `final.srt` is written NEXT TO the mp4 (a file,',
-    '    not baked-in text). That is all YouTube needs.',
-  ]
-  const subs916 = [
-    '  * 9:16 `final_9x16.mp4` (Shorts/Reels/TikTok): BURN Hormozi-style captions (big UPPERCASE words,',
-    '    the ACTIVE word highlighted in an accent color, animated pop). Place them HIGH (~55-60% down the',
-    '    frame) so they sit ABOVE the bottom-center PiP camera, never over the mouth. Build them as a',
-    '    TRANSPARENT HyperFrames overlay synced to the Whisper WORD timestamps (start from a `caption-*`',
-    '    registry example; scale word times to the real clip duration), render it to a transparent',
-    '    WebM/MOV, add it to the EDL `overlays` for the VERTICAL render only, and render that canvas with',
-    '    `--subs-mode off` (the captions come from the overlay, so ffmpeg must not also burn an SRT).',
-    '    (This machine\'s ffmpeg has no libass, so the `subtitles` filter is unavailable — the HyperFrames',
-    '    overlay is how you burn captions here; do NOT rely on `--subs-mode burn`.)',
-  ]
-  return [
-    aspectBlock,
-    o.subtitles ? [
-      '- SUBTITLES — DIFFERENT PER FORMAT (user preference, important):',
-      ...(aspect !== '9:16' ? subs169 : []),
-      ...(aspect !== '16:9' ? subs916 : []),
-    ].join('\n') : '- SUBTITLES: OFF — render with `--subs-mode off` and add no caption overlay.',
-    `- Transcription: run \`helpers/transcribe_whisper.py --model ${o.model}\` on each clip's webcam.webm. Do NOT use ElevenLabs.`,
-    `- Default PiP corner: ${o.pip}.`,
-    o.cropMenubar ? [
-      '- Remove the macOS menu bar from the screen track: set the EDL top-level `screen_crop` to',
-      '  {"top": 0.04} as a STARTING point. Then VERIFY and ADJUST: after rendering, extract a frame from a',
-      '  `fullscreen` or `pip` moment (`ffmpeg -ss <t> -i edit/final.mp4 -frames:v 1 /tmp/chk.png`) and LOOK',
-      '  at the image (read the PNG). The macOS menu bar (the top strip with the clock and app menus) must be',
-      '  FULLY gone, WITHOUT cropping real content. If a sliver of the bar still shows, increase',
-      '  `screen_crop.top` (try 0.05, 0.06, up to ~0.08 on notch MacBooks) and re-render; if it ate into the',
-      '  actual content, decrease it. Iterate until the bar is gone and the content is intact.',
-    ].join('\n') : null,
-    o.sfx ? [
-      '- SOUND from the HeyGen library — FRESH per video, timed to the WORDS (like avatar-muton):',
-      '  * The key is already in your ENVIRONMENT: `HEYGEN_API_KEY` (+ optional `HEYGEN_API_BASE`, default',
-      '    https://api.heygen.com). Do NOT look for it in a .env; read it from the env. Query the library with',
-      '    a SPECIFIC natural-language description and take the top-scoring match:',
-      '      `GET $HEYGEN_API_BASE/v3/audio/sounds?type=sound_effects&query=<e.g. "punchy whoosh transition">`',
-      '      header `x-api-key: $HEYGEN_API_KEY`. Download the pre-signed WAV into edit/sfx/.',
-      '  * PICK NEW, DIFFERENT sounds for THIS video (do not recycle the same handful every time) — search',
-      '    fresh queries that fit THIS content. Do NOT generate; these are professionally made.',
-      '  * PLACE THEM ON THE WORD: use the Whisper word timestamps to fire each SFX exactly when the trigger',
-      '    word is spoken (whoosh ON each shot change/transition, a pop/ding when a graphic element or key word',
-      '    lands, a riser INTO a reveal, "cash/coins" when money is said, a chime on a notification). Add an',
-      '    `sfx` array to the EDL: each {file, at (output-timeline seconds), gain_db (negative, sits UNDER the',
-      '    voice, ~-10..-16)}. A FEW well-placed beats loud and constant.',
-      '  * BACKGROUND MUSIC — decide PER VIDEO: if the piece wants energy (promo/story/hook), search',
-      '    `type=music` for a fitting track, download to edit/music/, and set the EDL top-level',
-      '    `music: {"file": "music/<name>.wav", "volume_db": -22}` (render.py ducks it under your voice',
-      '    automatically). For tutorials/demos where music would fight the explanation, use SFX ONLY (no music).',
-      '  * In the self-eval, confirm each SFX hits ON its word and adjust `at` if early/late.',
-      '  (Only if HeyGen is unreachable, fall back to ElevenLabs `POST /v1/sound-generation` for SFX.)',
-    ].join('\n') : null,
-    o.tone && o.tone.trim() ? `- Editing direction from the user: ${o.tone.trim()}` : null,
-  ].filter(Boolean)
-}
-
-function composePrompt(opts) {
-  return [
-    'You are running NON-INTERACTIVELY (headless). Use the **video-use** skill to edit the',
-    'multicam screen-recording project in the current directory into one finished video.',
-    '',
-    'This is a record-studio project. Clips live in `clips/clip_NN/` and each clip has two',
-    'SYNCHRONIZED tracks on one timeline: `screen.webm` (no audio) and `webcam.webm` (carries',
-    'the mic — the only audio). `sync.json` has `offset_ms`. Use the skill\'s MULTICAM mode.',
-    '',
-    'MONTAGE STYLE — smooth & alive, NOT choppy (copy avatar-muton, which the user loves):',
-    '  - The user DISLIKES hard "multicam" framing cuts. Favor CONTINUITY: keep the camera in a PiP over',
-    '    the screen while demoing (both visible), and reserve full shots for real beats. Use `fullcam` only',
-    '    when talking straight to the viewer (hook/CTA), `fullscreen` for a pure screen moment.',
-    '  - NEVER let a shot sit static: a slow PUNCH-IN ZOOM is ON by default (render.py) on fullcam,',
-    '    fullscreen AND the PiP camera — the camera is always gently moving. You may set a range\'s',
-    '    `"zoom":[1.0,1.06]` (or `"pip":{"zoom":[1.0,1.05]}`) to punch harder on an emphasis beat.',
-    '  - TRANSITIONS ARE CROSSFADES, not jump cuts: every range may carry `"transition":"fade"` (also',
-    '    "dissolve"/"slide") and `"transition_after_sec":0.4`. Use a hard `"transition":"cut"` ONLY at a',
-    '    genuine block change. Put a whoosh SFX on the bigger transitions (see SFX).',
-    '  - VARY THE CAMERA across the video, and use a DIFFERENT pattern each video: change the PiP',
-    '    `"pip":{"corner": …}` among `br/bl/tr/tl/bc/tc/cl/cr` and its `"scale"` (small ~0.24 up to a big',
-    '    ~0.5 "side" look) so it is not always the same corner. Do not repeat the previous video\'s plan.',
-    '',
-    'OPTIONS:',
-    ...optsLines(opts),
-    '',
-    `Do the FULL pipeline and WRITE ${aspectGoal(opts)}:`,
-    '  1. transcribe each clip (Whisper) → pack → read the transcript',
-    '  2. decide shots editorially and build a multicam EDL per clip',
-    '  3. render each clip with `helpers/render.py` and concatenate them in clip order — once per',
-    '     REQUESTED canvas (see OPTIONS: output 1920x1080 → final.mp4, output 1080x1920 → final_9x16.mp4)',
-    '  4. ADD GRAPHICS with HyperFrames, generously, using the `graphic` LAYOUT (see rules below).',
-    '',
-    'GRAPHICS — dynamic like a pro edit, but SYNCED TO THE SCRIPT (this is what was wrong before):',
-    '  - Use the PREDEFINED HyperFrames examples and pick the GOOD-LOOKING ones — do NOT default to',
-    '    `blank`. List them with `hyperframes init --example <name>` (registry has warm-grain, swiss-grid,',
-    '    kinetic-type, product-promo, logo-outro, caption-*, lt-* lower-thirds, transitions-*, vfx-*,',
-    '    code-snippet-*, app-showcase, …). Choose the example that fits each beat, then fill its text from',
-    '    the transcript.',
-    '  - PUT THE FIRST GRAPHIC within the first ~5 SECONDS of the video (a hook/title card).',
-    '  - A GRAPHIC COVERS ITS WHOLE NARRATION — this is the key fix. Its EDL range [start,end] must span the',
-    '    ENTIRE sentence/idea it illustrates (start ~0.4s before the payoff word, end after the sentence',
-    '    finishes), NEVER a 1-2s flash. Change graphic when the CONTENT changes (a new point), not on a fixed',
-    '    every-few-seconds timer.',
-    '  - SYNC THE ANIMATION TO THE VOICE: get the clip\'s Whisper word timestamps; each element inside the',
-    '    graphic (bullet, number, chip, badge) should ANIMATE IN exactly when its word is spoken. Scale TTS/',
-    '    transcript times to the real clip duration. A count-up/reveal should LAND on the spoken payoff word',
-    '    (start it `reveal_duration` earlier). A graphic that ignores the word timing feels disconnected.',
-    '  - Insert each graphic as an EDL range with {"layout":"graphic","graphic_file":"animations/slot_N/render.mp4"}.',
-    '    render.py shows it FULL-FRAME BUT keeps YOUR VOICE (the webcam mic) playing under it, and now',
-    '    CROSSFADES in/out (softer than the old hard cut-in). NEVER a silent/standalone clip — the voice must',
-    '    always be heard. Do NOT overlay graphics on top of the live demo.',
-    '  - Minimum readable: at least ~3-4s AND at least (its narration +1s); hold the final frame ~1s.',
-    '  - Render every HyperFrames graphic at every REQUESTED output size (see OPTIONS) so the segment matches each canvas.',
-    '',
-    'Subtitles follow the per-format policy in OPTIONS.',
-    '',
-    'Because this is headless, DO NOT ask for confirmation and DO NOT stop to discuss strategy —',
-    `pick sensible defaults and proceed. Keep going until ${aspectGoal(opts)} exists.`,
-  ].join('\n')
-}
-
-// The montage brief written as the project's CLAUDE.md, so the INTERACTIVE
-// terminal session auto-loads it and "knows everything" about how to edit this
-// record-studio project. Reuses optsLines() (the same knobs as headless compose).
-// The video-use SKILL.md (globally linked) carries the full craft; this file is
-// the project-specific orchestration on top of it.
-function montageBrief(opts) {
-  return [
-    '# Montar el vídeo de este proyecto (record-studio)',
-    '',
-    'Eres el **editor de vídeo** de este proyecto. Usa la skill **video-use** para montar los clips',
-    'grabados en el vídeo final. Sigue el CRAFT completo de `video-use/SKILL.md` (continuidad multicam,',
-    'zoom, crossfades, cámara variada, gráficos sincronizados a las palabras, SFX/música de HeyGen,',
-    'subtítulos por formato) — aquí va SOLO lo específico de este proyecto.',
-    '',
-    'ESTRUCTURA: los clips están en `clips/clip_NN/` y cada uno tiene dos pistas SINCRONIZADAS en una',
-    'misma línea de tiempo: `screen.webm` (sin audio) y `webcam.webm` (lleva el micro — el único audio).',
-    '`sync.json` tiene `offset_ms`. Usa el modo MULTICAM de la skill (layouts `fullcam`/`fullscreen`/',
-    '`pip`/`graphic` en la EDL, renderizando con `helpers/render.py`).',
-    '',
-    `OBJETIVO: generar ${aspectGoal(opts)} — mismo montaje, un render por lienzo pedido (cambia el \`output\` de la EDL).`,
-    '',
-    'OPCIONES DE ESTE PROYECTO:',
-    ...optsLines(opts),
-    '',
-    'ESTILO (resumen — el detalle está en video-use/SKILL.md):',
-    '- Montaje SUAVE, no choppy: cámara en PiP sobre la pantalla, **zoom lento siempre**, **crossfades**',
-    '  entre planos (corte duro solo en cambios de bloque). Varía la posición/tamaño del PiP.',
-    '- Gráficos HyperFrames que **cubren toda su narración** y con elementos animados **a la palabra**',
-    '  (word-timestamps de Whisper). Primer gráfico en los ~5s.',
-    '- SFX/música **nuevos por vídeo** de la librería de HeyGen, colocados en la palabra exacta.',
-    '- Subtítulos: 16:9 → `.srt` al lado (NO quemados); 9:16 → quemados estilo Hormozi (overlay de',
-    '  HyperFrames sincronizado a palabras, arriba, sobre la cámara).',
-    '',
-    'La `HEYGEN_API_KEY` (y `HEYGEN_API_BASE`) están en tu ENTORNO — úsalas para buscar/descargar sonidos.',
-    'Todo en ESPAÑOL con el usuario.',
-  ].join('\n')
-}
-
-// Write/refresh the project CLAUDE.md so the interactive session loads the brief.
-function ensureProjectClaudeMd(dir, opts) {
-  try {
-    fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), montageBrief(opts) + '\n')
-    return true
-  } catch (e) { console.error('[terminal] no pude escribir CLAUDE.md:', e.message); return false }
-}
-
-function iteratePrompt(feedback, opts) {
-  return [
-    'You are running NON-INTERACTIVELY (headless). This record-studio project already has an',
-    'edit at `edit/final.mp4` (and likely cached transcripts in `edit/transcripts/` and EDLs in',
-    '`edit/`). Use the **video-use** skill in ITERATE mode: apply the user\'s feedback and',
-    're-render, REUSING cached transcripts (never re-transcribe unless a source changed).',
-    '',
-    'USER FEEDBACK (apply this): ' + JSON.stringify(feedback || ''),
-    '',
-    'OPTIONS still apply:',
-    ...optsLines(opts),
-    '',
-    'Keep the SMOOTH montage style: PiP base with a slow punch-in zoom, CROSSFADES between shots (not',
-    'hard cuts — the user dislikes framing cuts), varied PiP position/size, graphics that span their whole',
-    'narration with elements synced to the spoken words, and fresh HeyGen SFX/music timed to the words.',
-    `Re-render ${aspectGoal(opts)}.`,
-    'Do NOT ask for confirmation. Keep going until the updated final(s) exist.',
-  ].join('\n')
-}
-
-// ---- Script-writing prompts (learn the user's voice, write in it) ----------
-
-function analyzePrompt(channel) {
-  return [
-    'You are running NON-INTERACTIVELY (headless). GOAL: learn the user\'s personal video style',
-    'from their YouTube channel so we can later write new scripts in THEIR voice.',
-    '',
-    `Channel: ${channel}`,
-    '',
-    'IMPORTANT: use only LONG-FORM videos, NOT Shorts (Shorts are the vertical clips ≤ 60s and live',
-    'in the channel\'s /shorts tab). Use the channel\'s VIDEOS tab and skip anything under ~90s.',
-    '',
-    'Steps:',
-    '1. With yt-dlp, list the channel\'s most recent ~15 LONG videos and fetch each TRANSCRIPT (auto-subs',
-    '   are fine). Target the videos tab — if the URL is a channel/handle, append "/videos"',
-    '   (e.g. https://youtube.com/@handle/videos); never use /shorts. Get the URLs, e.g.:',
-    '   `yt-dlp --flat-playlist --playlist-end 30 --print "%(url)s" "<channel>/videos"`',
-    '   Then for each, before transcribing, skip it if its duration is under ~90s (drop Shorts that',
-    '   slipped through), and fetch the transcript for the rest until you have ~15:',
-    '   `yt-dlp --skip-download --write-auto-subs --write-subs --sub-langs "es,en" --convert-subs srt -o "corpus/%(id)s.%(ext)s" "<videoUrl>"`',
-    '   Then strip timestamps to plain text under corpus/.',
-    '2. Read the transcripts and WRITE `style_profile.md` capturing the user\'s VOICE: tone, recurring',
-    '   phrases / catchphrases, vocabulary, sentence rhythm, how they HOOK at the start, how they',
-    '   structure a video, how they address the audience, their typical CTAs, pacing/length. Include',
-    '   CONCRETE example phrases they actually say (real quotes). This file is the reference for',
-    '   writing future scripts, so make it rich and specific.',
-    '',
-    'Write in the same language as their content (likely Spanish). Skip videos without subtitles.',
-    'Do NOT ask questions. Keep going until `style_profile.md` exists with a genuinely useful profile.',
-  ].join('\n')
-}
-
-function scriptOptsLines(opts) {
-  const o = opts || {}
-  return [
-    o.duration ? `- Target length: about ${o.duration}.` : '- Target length: short-form unless the style suggests otherwise.',
-    o.format ? `- Format/platform: ${o.format}.` : null,
-    '- Language: match the user\'s channel (Spanish if their videos are in Spanish).',
-  ].filter(Boolean)
-}
-
-function generatePrompt(topic, opts, draftPath) {
-  return [
-    'You are running NON-INTERACTIVELY (headless). Write a NEW video script in the USER\'S OWN VOICE.',
-    '',
-    'CRITICAL — two SEPARATE inputs, never confuse them:',
-    '  • `style_profile.md` + `corpus/` define HOW the user talks (tone, phrases, rhythm, hooks,',
-    '    structure). Use them ONLY for voice/style. Do NOT borrow the topic or content of past videos.',
-    '  • The TOPIC below defines WHAT this video is about. The substance comes from it.',
-    '',
-    'TOPIC (what the video is about):',
-    `"""${topic}"""`,
-    '',
-    'RESEARCH FIRST (mandatory) — gather real, current facts before writing:',
-    '  • If the topic contains any URL, OPEN and READ it (WebFetch tool; for a GitHub repo read its README;',
-    '    if WebFetch fails try `curl -sL <url>` or `gh repo view <owner/repo> --json name,description,...`).',
-    '  • ALSO use the WebSearch tool to fill gaps and get UP-TO-DATE information: anything you are unsure',
-    '    about, recent developments, context, real names/numbers/dates. Trust current web results over your',
-    '    own memory (which may be outdated).',
-    '  Base the script on what you ACTUALLY find: the real product name, what it really does, its real',
-    '  features and how it works. NEVER invent facts and NEVER reuse an unrelated past video as if it were',
-    '  this topic. If you truly cannot verify something, leave a short TODO note in the script instead of',
-    '  making it up.',
-    '',
-    'Then read `style_profile.md` (skim 1-2 `corpus/` files only to copy phrasing/rhythm) and write the',
-    'script ABOUT the real topic above.',
-    '',
-    'Constraints:',
-    ...scriptOptsLines(opts),
-    '',
-    'Sound like THEM (their hooks, phrases, rhythm, CTA) but about the REAL subject. Structure it for',
-    'video (hook → desarrollo → cierre/CTA), ready to read aloud as a teleprompter.',
-    '',
-    'OUTPUT FORMAT: PLAIN TEXT ONLY. No Markdown whatsoever — no asterisks (**), no #, no backticks, no',
-    'bullet symbols, no bold/italics. If you label sections, put a simple UPPERCASE word on its own line',
-    '(e.g. GANCHO, DESARROLLO, CIERRE) with a blank line around it. Just the spoken words, clean.',
-    '',
-    `Write ONLY the finished script to this EXACT file: ${draftPath}`,
-    'Do NOT ask questions and do not write anything else.',
-  ].join('\n')
-}
-
-function rewritePrompt(scriptPath, feedback, opts) {
-  return [
-    'You are running NON-INTERACTIVELY (headless). There is an existing script at:',
-    `${scriptPath}`,
-    '',
-    'Rewrite it applying this feedback, while KEEPING the user\'s voice (see `style_profile.md`):',
-    `"""${feedback}"""`,
-    '',
-    'Keep all facts accurate: if the script is about a product/URL, do not invent features — re-check the',
-    'source (WebFetch / curl / gh) and use WebSearch for anything new or uncertain if the feedback touches',
-    'the substance. Use the corpus only for VOICE.',
-    '',
-    'Constraints still apply:',
-    ...scriptOptsLines(opts),
-    '',
-    'Keep it PLAIN TEXT (no Markdown, no asterisks, no #, no backticks). Section labels, if any, are a',
-    'simple UPPERCASE word on its own line.',
-    '',
-    `Overwrite the SAME file (${scriptPath}) with the improved script. Do NOT ask questions.`,
-  ].join('\n')
-}
-
-// ---- Agent job manager (compose + iterate) ---------------------------------
-
-// Structured progress event {kind:'cmd'|'tool'|'text'|'status', label} so the
-// renderer can group tool activity and show assistant text as chat bubbles.
-function progressFromEvent(ev) {
-  if (!ev || typeof ev !== 'object') return null
-  if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
-    for (const block of ev.message.content) {
-      if (block.type === 'tool_use') {
-        const name = block.name || 'tool'
-        if (name === 'Bash' && block.input && block.input.command) {
-          return { kind: 'cmd', label: String(block.input.command).split('\n')[0].slice(0, 120) }
-        }
-        return { kind: 'tool', label: name }
-      }
-      if (block.type === 'text' && block.text && block.text.trim()) {
-        return { kind: 'text', label: block.text.trim().replace(/\s+/g, ' ').slice(0, 400) }
-      }
-    }
-  }
-  if (ev.type === 'result') return { kind: 'status', label: ev.is_error ? 'error en el agente' : 'agente terminado' }
-  return null
-}
-
-function broadcast(channel, payload) {
-  for (const w of BrowserWindow.getAllWindows()) {
-    try { w.webContents.send(channel, payload) } catch { /* gone */ }
-  }
-}
-
-// Flat one-line form of an event, kept for the raw log / old renderers.
-function evToMsg(ev) {
-  if (ev.kind === 'cmd') return `$ ${ev.label}`
-  if (ev.kind === 'tool') return `· ${ev.label}`
-  return ev.label
-}
-function pushEvent(key, ev) {
-  const msg = evToMsg(ev)
-  const job = agentJobs.get(key)
-  if (job) {
-    job.log.push(msg); if (job.log.length > 600) job.log.shift()
-    job.events = job.events || []
-    job.events.push(ev); if (job.events.length > 300) job.events.shift()
-  }
-  broadcast('agent-progress', { key, msg, ev })
-}
-function pushLog(key, msg) { pushEvent(key, { kind: 'status', label: msg }) }
-
-// The HeyGen API key/base live in avatar-muton's `.env` (canonical, per CLAUDE.md).
-// Inject them into the headless agent's environment so it can pull NEW sound
-// effects / music from the HeyGen library per video (REST). Never logged/printed.
-// Returns {} if the file or keys are missing (agent then falls back to ElevenLabs).
-function heygenEnv() {
-  try {
-    const envPath = path.join(process.env.HOME || '', 'Documents', 'avatar-muton', '.env')
-    const txt = fs.readFileSync(envPath, 'utf8')
-    const out = {}
-    for (const line of txt.split(/\r?\n/)) {
-      const m = /^\s*(HEYGEN_API_KEY|HEYGEN_API_BASE)\s*=\s*(.*)$/.exec(line)
-      if (m) out[m[1]] = m[2].trim().replace(/^["']|["']$/g, '')
-    }
-    return out
-  } catch { return {} }
-}
-
-// Run a headless `claude -p` agent. successCheck() returns a result object on
-// success, or null on failure. Generic over compose/iterate and scripts.
-function runAgentJob(key, cwd, prompt, successCheck, startMsg, extra = {}) {
-  const existing = agentJobs.get(key)
-  if (existing && existing.status === 'running') return { started: false, already: true }
-
-  const claude = claudePath()
-  const job = { status: 'running', log: [], events: [], child: null, error: null, result: null, sessionId: null }
-  agentJobs.set(key, job)
-
-  if (!claude) {
-    job.status = 'error'
-    job.error = 'no encuentro la CLI `claude` (Claude Code) en el PATH.'
-    pushLog(key, 'Error: ' + job.error)
-    broadcast('agent-done', { key, ok: false, error: job.error })
-    return { started: false, error: job.error }
-  }
-
-  fs.mkdirSync(cwd, { recursive: true })
-  pushLog(key, startMsg || 'Lanzando Claude Code…')
-
-  const args = ['-p', prompt, '--add-dir', cwd, '--permission-mode', 'bypassPermissions', '--output-format', 'stream-json', '--verbose']
-  // Resume a previous Claude Code session so it REMEMBERS earlier edits in this
-  // project, instead of starting a fresh conversation each time.
-  if (extra.resumeId) {
-    args.push('--resume', extra.resumeId)
-    pushLog(key, '↻ Continuando la conversación anterior…')
-  }
-  let child
-  try {
-    child = spawn(claude, args, { cwd, env: { ...process.env, ...heygenEnv() }, stdio: ['ignore', 'pipe', 'pipe'] })
-  } catch (err) {
-    job.status = 'error'; job.error = err.message
-    pushLog(key, 'Error: ' + err.message)
-    broadcast('agent-done', { key, ok: false, error: err.message })
-    return { started: false, error: err.message }
-  }
-  job.child = child
-
-  let buf = ''
-  let lastErr = ''
-  child.stdout.on('data', (d) => {
-    buf += d.toString()
-    let nl
-    while ((nl = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, nl).trim()
-      buf = buf.slice(nl + 1)
-      if (!line) continue
-      try {
-        const ev = JSON.parse(line)
-        if (ev && ev.session_id && ev.session_id !== job.sessionId) {
-          job.sessionId = ev.session_id
-          try { extra.onSession && extra.onSession(ev.session_id) } catch { /* ignore */ }
-        }
-        const m = progressFromEvent(ev); if (m) pushEvent(key, m)
-      } catch { /* non-json */ }
-    }
-  })
-  child.stderr.on('data', (d) => { lastErr += d.toString(); if (lastErr.length > 4000) lastErr = lastErr.slice(-4000) })
-  child.on('error', (err) => {
-    job.status = 'error'; job.error = err.message
-    pushLog(key, 'Error: ' + err.message)
-    broadcast('agent-done', { key, ok: false, error: err.message })
-  })
-  child.on('close', (code) => {
-    if (job.status === 'cancelled') {
-      pushLog(key, 'Cancelado.')
-      broadcast('agent-done', { key, ok: false, error: 'cancelado' })
-      return
-    }
-    let result = null
-    try { result = successCheck() } catch { result = null }
-    if (result) {
-      job.status = 'done'; job.result = result
-      pushLog(key, 'Listo ✓')
-      broadcast('agent-done', { key, ok: true, result })
-    } else {
-      job.status = 'error'
-      job.error = `el agente terminó (código ${code}) sin el resultado esperado. ${lastErr.slice(-200)}`
-      pushLog(key, 'Error: sin resultado esperado')
-      broadcast('agent-done', { key, ok: false, error: job.error })
-    }
-  })
-  return { started: true }
 }
 
 // ---- IPC: capture sources --------------------------------------------------
 
 ipcMain.handle('list-sources', async () => {
-  const sources = await desktopCapturer.getSources({
-    types: ['screen', 'window'],
-    thumbnailSize: { width: 320, height: 200 },
-    fetchWindowIcons: false,
-  })
+  // Request displays and windows separately: on macOS either list can arrive
+  // with empty thumbnails during desktop reconfiguration. Retry that list once.
+  async function list(kind) {
+    const options = { types: [kind], thumbnailSize: { width: 320, height: 200 }, fetchWindowIcons: true }
+    const first = await desktopCapturer.getSources(options)
+    if (first.length && first.some(s => !s.thumbnail.isEmpty())) return first
+    await new Promise(resolve => setTimeout(resolve, 200))
+    const retry = await desktopCapturer.getSources(options)
+    return retry.length ? retry : first
+  }
+  const sources = [...await list('screen'), ...await list('window')]
   // Map screen capture-sources to real displays so the UI can say *which*
   // monitor it is (nº, principal, resolución) instead of just "Entire screen".
   const displays = screen.getAllDisplays()
@@ -936,7 +449,6 @@ ipcMain.handle('list-sources', async () => {
     let name = s.name
     let detail = ''
     if (isScreen) {
-      // desktopCapturer gives `display_id` as a string; match it to a display.
       const di = displays.findIndex((d) => String(d.id) === String(s.display_id))
       const disp = di >= 0 ? displays[di] : null
       const num = di >= 0 ? di + 1 : (displays.length > 1 ? '?' : 1)
@@ -947,17 +459,17 @@ ipcMain.handle('list-sources', async () => {
         detail = `${Math.round(width * disp.scaleFactor)}×${Math.round(height * disp.scaleFactor)}`
       }
     } else {
-      // A window: flag our own app so the user doesn't record the recorder.
-      detail = new RegExp(appName, 'i').test(s.name) ? 'esta app (record-studio)' : 'ventana'
+      detail = s.name.toLowerCase().includes(appName.toLowerCase()) ? 'Esta app · efecto espejo' : 'Solo esta ventana'
     }
     return {
       id: s.id,
       name,
-      title: s.name, // original OS title, kept for windows
+      title: s.name,
       detail,
       kind: isScreen ? 'screen' : 'window',
-      isApp: !isScreen && new RegExp(appName, 'i').test(s.name),
-      thumbnail: s.thumbnail.toDataURL(),
+      isApp: !isScreen && s.name.toLowerCase().includes(appName.toLowerCase()),
+      thumbnail: s.thumbnail.isEmpty() ? null : s.thumbnail.toDataURL(),
+      appIcon: s.appIcon && !s.appIcon.isEmpty() ? s.appIcon.toDataURL() : null,
     }
   })
 })
@@ -970,13 +482,22 @@ ipcMain.handle('choose-dir', async (_e, title) => {
     properties: ['openDirectory', 'createDirectory'],
   })
   if (res.canceled || !res.filePaths[0]) return null
+  registerRoot(res.filePaths[0])
   return res.filePaths[0]
+})
+
+// Espacio libre en el disco de la carpeta (para avisar antes de grabar).
+const MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024
+ipcMain.handle('disk-free', async (_e, p) => {
+  const bytes = freeBytes(p || settings.get('root') || app.getPath('home'))
+  return { bytes, human: fmtBytes(bytes), low: bytes != null && bytes < MIN_FREE_BYTES, minHuman: fmtBytes(MIN_FREE_BYTES) }
 })
 
 // ---- IPC: projects ---------------------------------------------------------
 
 ipcMain.handle('list-projects', async (_e, root) => {
   if (!root || !fs.existsSync(root)) return []
+  guardRoot(root)
   const out = []
   for (const e of fs.readdirSync(root, { withFileTypes: true })) {
     if (!e.isDirectory()) continue
@@ -987,13 +508,14 @@ ipcMain.handle('list-projects', async (_e, root) => {
   return out
 })
 
-ipcMain.handle('create-project', async (_e, { root, name }) => {
+ipcMain.handle('create-project', async (_e, { root, name, script }) => {
+  guardRoot(root)
   fs.mkdirSync(root, { recursive: true })
   const dir = uniqueDir(root, slugify(name))
   fs.mkdirSync(path.join(dir, 'clips'), { recursive: true })
   fs.mkdirSync(path.join(dir, 'edit'), { recursive: true })
   const project = {
-    version: 1,
+    version: 2,
     name: name || path.basename(dir),
     slug: path.basename(dir),
     created: stamp(),
@@ -1001,30 +523,45 @@ ipcMain.handle('create-project', async (_e, { root, name }) => {
     audio_source: 'webcam',
     compose_opts: { ...DEFAULT_OPTS },
     clips: [],
+    agentRuns: [],
   }
-  fs.writeFileSync(path.join(dir, 'project.json'), JSON.stringify(project, null, 2))
+  if (script && script.text) {
+    fs.writeFileSync(path.join(dir, 'script.md'), script.text)
+    project.teleprompter = script.text
+    project.script = { source: script.path || null, words: wordCount(script.text) }
+  }
+  writeJson(path.join(dir, 'project.json'), project)
   return summarizeProject(dir)
 })
 
+function clipDetail(dir, c) {
+  const webcamPath = path.join(dir, c.webcam || `clips/${c.id}/webcam.webm`)
+  const sync = readJson(path.join(dir, 'clips', c.id, 'sync.json'), null)
+  const enhanced = !!(c.enhanced || (sync && sync.enhanced === 'nvidia_studio_voice'))
+  return {
+    id: c.id,
+    durationMs: c.duration_ms || 0,
+    offsetMs: c.offset_ms || 0,
+    created: c.created || '',
+    status: c.status || 'ok',
+    statusNote: c.status_note || '',
+    enhanced,
+    webcamPath,
+    thumbDataUrl: frameUrl(webcamPath, path.join(dir, 'clips', c.id, '_thumb.jpg'), 0.5),
+  }
+}
+
 ipcMain.handle('project-detail', async (_e, dir) => {
+  guardPath(dir, 'carpeta del proyecto')
   const summary = summarizeProject(dir)
   if (!summary) return null
   const proj = readProjectJson(dir)
-  const clips = (proj.clips || []).map((c) => {
-    const webcamPath = path.join(dir, c.webcam || `clips/${c.id}/webcam.webm`)
-    return {
-      id: c.id,
-      durationMs: c.duration_ms || 0,
-      offsetMs: c.offset_ms || 0,
-      created: c.created || '',
-      webcamPath,
-      thumbDataUrl: frameDataUrl(webcamPath, path.join(dir, 'clips', c.id, '_thumb.jpg'), 0.5),
-    }
-  })
-  return { ...summary, clips, teleprompter: proj.teleprompter || '' }
+  const clips = (proj.clips || []).map((c) => clipDetail(dir, c))
+  return { ...summary, clips, teleprompter: proj.teleprompter || '', orphans: listOrphanParts(dir), script: proj.script || null }
 })
 
 ipcMain.handle('set-teleprompter', async (_e, { dir, text }) => {
+  guardPath(dir, 'carpeta del proyecto')
   const proj = readProjectJson(dir)
   if (!proj) throw new Error('project.json no encontrado')
   proj.teleprompter = text || ''
@@ -1032,36 +569,322 @@ ipcMain.handle('set-teleprompter', async (_e, { dir, text }) => {
   return summarizeProject(dir)
 })
 
-ipcMain.handle('append-clip', async (_e, payload) => {
-  const { dir, screenBuf, webcamBuf, durationMs, offsetMs, dims } = payload
+// ---- IPC: grabación por chunks -----------------------------------------------
+// El renderer envía cada chunk del MediaRecorder según llega (cada ~1 s) y aquí
+// se APPENDEA a `clips/clip_NN/{screen,webcam}.part.webm`. Si la app muere a mitad
+// de toma, lo grabado hasta entonces sigue en disco y se puede recuperar.
+
+const openClips = new Map() // clipDir -> { fds: {screen, webcam}, bytes: {screen, webcam} }
+
+function nextClipId(dir, proj) {
+  const used = new Set((proj.clips || []).map((c) => c.id))
+  let n = (proj.clips || []).length + 1
+  let id = `clip_${String(n).padStart(2, '0')}`
+  while (used.has(id) || fs.existsSync(path.join(dir, 'clips', id))) { n += 1; id = `clip_${String(n).padStart(2, '0')}` }
+  return id
+}
+
+ipcMain.handle('clip-begin', async (_e, { dir }) => {
+  guardPath(dir, 'carpeta del proyecto')
   const proj = readProjectJson(dir)
   if (!proj) throw new Error('project.json no encontrado en ' + dir)
+  const clipId = nextClipId(dir, proj)
+  const clipDir = path.join(dir, 'clips', clipId)
+  fs.mkdirSync(clipDir, { recursive: true })
+  const fds = {
+    screen: fs.openSync(path.join(clipDir, 'screen.part.webm'), 'w'),
+    webcam: fs.openSync(path.join(clipDir, 'webcam.part.webm'), 'w'),
+  }
+  writeJson(path.join(clipDir, 'recording.json'), { started: stamp(), clipId, status: 'recording' })
+  openClips.set(clipDir, { fds, bytes: { screen: 0, webcam: 0 }, clipId, dir })
+  return { clipId, clipDir }
+})
 
-  const n = (proj.clips || []).length + 1
-  const clipId = `clip_${String(n).padStart(2, '0')}`
+ipcMain.handle('clip-chunk', async (_e, { clipDir, track, data }) => {
+  const oc = openClips.get(clipDir)
+  if (!oc || !oc.fds[track]) throw new Error('clip no abierto: ' + clipDir)
+  const buf = Buffer.from(data)
+  fs.writeSync(oc.fds[track], buf)
+  oc.bytes[track] += buf.length
+  return oc.bytes[track]
+})
+
+function closeClipFds(oc) {
+  for (const k of Object.keys(oc.fds)) { try { fs.closeSync(oc.fds[k]) } catch { /* closed */ } }
+}
+
+ipcMain.handle('clip-abort', async (_e, { clipDir }) => {
+  const oc = openClips.get(clipDir)
+  if (oc) { closeClipFds(oc); openClips.delete(clipDir) }
+  try { guardPath(clipDir, 'clip'); fs.rmSync(clipDir, { recursive: true, force: true }) } catch { /* ignore */ }
+  return { ok: true }
+})
+
+function writeSyncJson(clipDir, { durationMs, offsetMs, dims, pauses, firstData }) {
+  const sync = {
+    version: 2, created: stamp(), audio_source: 'webcam',
+    duration_ms: Math.round(durationMs), offset_ms: Math.round(offsetMs),
+    note: 'offset_ms = webcam_start - screen_start; align by trimming the head of the later source.',
+    first_data_ms: firstData || null, // primer chunk real de cada recorder relativo al inicio (alternativa al offset por onstart)
+    pauses_ms: pauses || [],          // intervalos [start,end] relativos al inicio en los que se pausó
+    sources: { screen: { file: 'screen.webm', dims: dims.screen }, webcam: { file: 'webcam.webm', dims: dims.webcam } },
+  }
+  writeJson(path.join(clipDir, 'sync.json'), sync)
+  return sync
+}
+
+function finalizeClip(dir, clipId, meta) {
+  const clipDir = path.join(dir, 'clips', clipId)
+  for (const t of ['screen', 'webcam']) {
+    const part = path.join(clipDir, `${t}.part.webm`)
+    if (fs.existsSync(part)) fs.renameSync(part, path.join(clipDir, `${t}.webm`))
+  }
+  try { fs.unlinkSync(path.join(clipDir, 'recording.json')) } catch { /* none */ }
+  const sync = writeSyncJson(clipDir, meta)
+  const proj = readProjectJson(dir)
+  proj.clips = (proj.clips || []).filter((c) => c.id !== clipId)
+  proj.clips.push({
+    id: clipId, created: sync.created, duration_ms: sync.duration_ms, offset_ms: sync.offset_ms,
+    screen: `clips/${clipId}/screen.webm`, webcam: `clips/${clipId}/webcam.webm`, dims: meta.dims,
+    status: 'checking', recorder_errors: meta.errors || [],
+    // Qué se grabó y sobre qué fondo hay que recomponer. `cam.raw` = la pista de
+    // cámara NO lleva el fondo cocido; `_scripts/rematte_cam.py` lo compone
+    // después con un modelo mejor que el de tiempo real.
+    ...(meta.cam ? { cam: meta.cam } : {}),
+  })
+  writeProjectJson(dir, proj)
+  validateClipAsync(dir, clipId, sync.duration_ms, meta.errors || [])
+}
+
+ipcMain.handle('clip-finish', async (_e, { clipDir, durationMs, offsetMs, dims, pauses, firstData, errors, cam }) => {
+  const oc = openClips.get(clipDir)
+  if (!oc) throw new Error('clip no abierto: ' + clipDir)
+  closeClipFds(oc); openClips.delete(clipDir)
+  const meta = { durationMs, offsetMs, dims, pauses, firstData, errors, cam }
+  if (!oc.bytes.screen && !oc.bytes.webcam) {
+    fs.rmSync(clipDir, { recursive: true, force: true })
+    throw new Error('la grabación no produjo datos (0 bytes en ambas pistas)')
+  }
+  finalizeClip(oc.dir, oc.clipId, meta)
+  return summarizeProject(oc.dir)
+})
+
+// Duración real de un webm (MediaRecorder no escribe la duración en la cabecera,
+// así que se lee el pts del último paquete). Asíncrono: no bloquea el guardado.
+function probeDurationMs(file) {
+  return new Promise((resolve) => {
+    const ffprobe = ffprobePath()
+    if (!ffprobe || !fs.existsSync(file)) return resolve(null)
+    const p = spawn(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=pts_time', '-of', 'csv=p=0', file])
+    let tail = ''
+    p.stdout.on('data', (d) => {
+      tail += d.toString()
+      if (tail.length > 4096) tail = tail.slice(-4096)
+    })
+    p.on('close', () => {
+      const lines = tail.trim().split('\n').filter(Boolean)
+      const v = parseFloat(lines[lines.length - 1] || '')
+      resolve(Number.isFinite(v) ? Math.round(v * 1000) : null)
+    })
+    p.on('error', () => resolve(null))
+  })
+}
+
+async function validateClipAsync(dir, clipId, expectedMs, errors) {
+  const clipDir = path.join(dir, 'clips', clipId)
+  const probed = {}
+  for (const t of ['screen', 'webcam']) probed[t] = await probeDurationMs(path.join(clipDir, `${t}.webm`))
+  const sizes = {}
+  for (const t of ['screen', 'webcam']) { try { sizes[t] = fs.statSync(path.join(clipDir, `${t}.webm`)).size } catch { sizes[t] = 0 } }
+  let status = 'ok'
+  const notes = []
+  for (const t of ['screen', 'webcam']) {
+    const label = t === 'screen' ? 'pantalla' : 'cámara'
+    if (!sizes[t]) { status = 'empty'; notes.push(`${label}: fichero vacío`); continue }
+    if (probed[t] == null) { notes.push(`${label}: no se pudo medir`); continue }
+    if (expectedMs && probed[t] < expectedMs - 2000) {
+      if (status !== 'empty') status = 'truncated'
+      notes.push(`${label}: ${(probed[t] / 1000).toFixed(1)}s de ${(expectedMs / 1000).toFixed(1)}s esperados`)
+    }
+  }
+  if (errors && errors.length && status === 'ok') { status = 'warning'; notes.push('el grabador reportó errores: ' + errors.join('; ')) }
+  const proj = readProjectJson(dir)
+  if (!proj) return
+  const c = (proj.clips || []).find((x) => x.id === clipId)
+  if (!c) return
+  c.status = status
+  c.status_note = notes.join(' · ')
+  c.probed_ms = probed
+  writeProjectJson(dir, proj)
+  try {
+    const sync = readJson(path.join(clipDir, 'sync.json'), null)
+    if (sync) { sync.probed_ms = probed; sync.status = status; writeJson(path.join(clipDir, 'sync.json'), sync) }
+  } catch { /* ignore */ }
+  agent.broadcast('clip-validated', { dir, clipId, status, note: c.status_note, probed })
+  if (status === 'ok' || status === 'warning') {
+    enhanceClipAsync(dir, clipId).catch((err) => console.error(`[voice] error en auto-mejora de ${clipId}:`, err.message))
+  }
+}
+
+// ---- Mejora de voz automática con NVIDIA Studio Voice NIM -------------------
+function voiceEnhanceScript() {
+  const p = path.join(__dirname, '..', 'video-use', 'helpers', 'enhance_voice.py')
+  return fs.existsSync(p) ? p : null
+}
+function voicePythonBin() {
+  const venvPy = path.join(__dirname, '..', 'video-use', '.venv', 'bin', 'python')
+  if (fs.existsSync(venvPy)) return venvPy
+  const editVenvPy = path.join(__dirname, '..', 'record-studio', 'edit', '.venv', 'bin', 'python')
+  if (fs.existsSync(editVenvPy)) return editVenvPy
+  return findBin('python3', ['python3', '/opt/homebrew/bin/python3', '/usr/local/bin/python3'])
+}
+
+async function enhanceClipAsync(dir, clipId, force = false) {
+  const script = voiceEnhanceScript()
+  if (!script) return { ok: false, error: 'script enhance_voice.py no encontrado' }
+  const py = voicePythonBin()
+  if (!py) return { ok: false, error: 'python3 no encontrado' }
+
+  const env = { ...process.env, ...agent.serviceEnv() }
+  const hasKey = !!(env.NVIDIA_API_KEY || env.NGC_API_KEY)
+  const enabled = settings.get('enhanceVoice', true)
+  if (!hasKey || !enabled) {
+    return { ok: false, skipped: true, error: !hasKey ? 'sin NVIDIA_API_KEY' : 'desactivado en ajustes' }
+  }
+
+  const clipDir = path.join(dir, 'clips', clipId)
+  if (!fs.existsSync(clipDir)) return { ok: false, error: 'clip no existe' }
+
+  agent.broadcast('clip-enhancing', { dir, clipId, status: 'enhancing' })
+
+  return new Promise((resolve) => {
+    const args = [script, '--clip', clipDir]
+    if (force) args.push('--force')
+    const child = spawn(py, args, { cwd: dir, env, stdio: ['ignore', 'pipe', 'pipe'] })
+    let output = ''
+    child.stdout.on('data', (d) => { output += d.toString() })
+    child.stderr.on('data', (d) => { output += d.toString() })
+    child.on('close', (code) => {
+      const ok = code === 0
+      if (ok) {
+        const proj = readProjectJson(dir)
+        if (proj) {
+          const c = (proj.clips || []).find((x) => x.id === clipId)
+          if (c) c.enhanced = true
+          writeProjectJson(dir, proj)
+        }
+        agent.broadcast('clip-enhanced', { dir, clipId, status: 'ok', enhanced: true })
+        resolve({ ok: true, enhanced: true })
+      } else {
+        const tail = output.trim().split('\n').slice(-2).join(' ')
+        console.warn(`[voice] fallo al mejorar audio de ${clipId} (código ${code}): ${tail}`)
+        agent.broadcast('clip-enhanced', { dir, clipId, status: 'err', error: tail })
+        resolve({ ok: false, error: tail })
+      }
+    })
+    child.on('error', (err) => {
+      console.warn(`[voice] error al ejecutar ${py}:`, err.message)
+      agent.broadcast('clip-enhanced', { dir, clipId, status: 'err', error: err.message })
+      resolve({ ok: false, error: err.message })
+    })
+  })
+}
+
+async function enhanceAllClipsAsync(dir, force = false) {
+  const script = voiceEnhanceScript()
+  if (!script) return { ok: false, error: 'script enhance_voice.py no encontrado' }
+  const py = voicePythonBin()
+  if (!py) return { ok: false, error: 'python3 no encontrado' }
+  const env = { ...process.env, ...agent.serviceEnv() }
+  const hasKey = !!(env.NVIDIA_API_KEY || env.NGC_API_KEY)
+  if (!hasKey) return { ok: false, error: 'No se encontró NVIDIA_API_KEY en el entorno ni en ~/.config/record-studio/.env' }
+
+  return new Promise((resolve) => {
+    const args = [script, '--all', '--dir', dir]
+    if (force) args.push('--force')
+    const child = spawn(py, args, { cwd: dir, env, stdio: ['ignore', 'pipe', 'pipe'] })
+    let output = ''
+    child.stdout.on('data', (d) => { output += d.toString() })
+    child.stderr.on('data', (d) => { output += d.toString() })
+    child.on('close', (code) => {
+      const ok = code === 0
+      const proj = readProjectJson(dir)
+      if (proj && ok) {
+        for (const c of proj.clips || []) c.enhanced = true
+        writeProjectJson(dir, proj)
+      }
+      agent.broadcast('project-clips-enhanced', { dir, ok, output })
+      resolve({ ok, output })
+    })
+    child.on('error', (err) => resolve({ ok: false, error: err.message }))
+  })
+}
+
+ipcMain.handle('clip-enhance', async (_e, { dir, clipId, force }) => {
+  guardPath(dir, 'carpeta del proyecto')
+  return enhanceClipAsync(dir, clipId, force)
+})
+ipcMain.handle('project-enhance-clips', async (_e, { dir, force }) => {
+  guardPath(dir, 'carpeta del proyecto')
+  return enhanceAllClipsAsync(dir, force)
+})
+
+
+// Tomas a medias de una sesión anterior (la app murió grabando).
+function listOrphanParts(dir) {
+  const out = []
+  const clipsDir = path.join(dir, 'clips')
+  if (!fs.existsSync(clipsDir)) return out
+  for (const e of fs.readdirSync(clipsDir, { withFileTypes: true })) {
+    if (!e.isDirectory()) continue
+    const clipDir = path.join(clipsDir, e.name)
+    if (openClips.has(clipDir)) continue
+    const parts = ['screen', 'webcam'].filter((t) => fs.existsSync(path.join(clipDir, `${t}.part.webm`)))
+    if (!parts.length) continue
+    const bytes = parts.reduce((a, t) => a + fs.statSync(path.join(clipDir, `${t}.part.webm`)).size, 0)
+    const rec = readJson(path.join(clipDir, 'recording.json'), {}) || {}
+    out.push({ clipId: e.name, clipDir, parts, bytes, human: fmtBytes(bytes), started: rec.started || '' })
+  }
+  return out
+}
+
+ipcMain.handle('clip-recover', async (_e, { dir, clipId }) => {
+  guardPath(dir, 'carpeta del proyecto')
+  const clipDir = path.join(dir, 'clips', clipId)
+  const oc = openClips.get(clipDir)
+  if (oc) { closeClipFds(oc); openClips.delete(clipDir) }
+  const probed = {}
+  for (const t of ['screen', 'webcam']) probed[t] = await probeDurationMs(path.join(clipDir, `${t}.part.webm`))
+  const durationMs = Math.max(probed.screen || 0, probed.webcam || 0)
+  if (!durationMs) throw new Error('la toma no tiene vídeo legible; solo se puede descartar')
+  finalizeClip(dir, clipId, { durationMs, offsetMs: 0, dims: { screen: null, webcam: null }, pauses: [], errors: ['recuperado tras un cierre inesperado'] })
+  return summarizeProject(dir)
+})
+
+ipcMain.handle('clip-discard-part', async (_e, { dir, clipId }) => {
+  guardPath(dir, 'carpeta del proyecto')
+  const clipDir = path.join(dir, 'clips', clipId)
+  try { await shell.trashItem(clipDir) } catch { fs.rmSync(clipDir, { recursive: true, force: true }) }
+  return summarizeProject(dir)
+})
+
+// Compatibilidad: guardado "todo de golpe" (fallback si el streaming falla).
+ipcMain.handle('append-clip', async (_e, payload) => {
+  const { dir, screenBuf, webcamBuf, durationMs, offsetMs, dims, cam } = payload
+  guardPath(dir, 'carpeta del proyecto')
+  const proj = readProjectJson(dir)
+  if (!proj) throw new Error('project.json no encontrado en ' + dir)
+  const clipId = nextClipId(dir, proj)
   const clipDir = path.join(dir, 'clips', clipId)
   fs.mkdirSync(clipDir, { recursive: true })
   fs.writeFileSync(path.join(clipDir, 'screen.webm'), Buffer.from(screenBuf))
   fs.writeFileSync(path.join(clipDir, 'webcam.webm'), Buffer.from(webcamBuf))
-
-  const sync = {
-    version: 1, created: stamp(), audio_source: 'webcam',
-    duration_ms: Math.round(durationMs), offset_ms: Math.round(offsetMs),
-    note: 'offset_ms = webcam_start - screen_start; align by trimming the head of the later source.',
-    sources: { screen: { file: 'screen.webm', dims: dims.screen }, webcam: { file: 'webcam.webm', dims: dims.webcam } },
-  }
-  fs.writeFileSync(path.join(clipDir, 'sync.json'), JSON.stringify(sync, null, 2))
-
-  proj.clips = proj.clips || []
-  proj.clips.push({
-    id: clipId, created: sync.created, duration_ms: sync.duration_ms, offset_ms: sync.offset_ms,
-    screen: `clips/${clipId}/screen.webm`, webcam: `clips/${clipId}/webcam.webm`, dims,
-  })
-  writeProjectJson(dir, proj)
+  finalizeClip(dir, clipId, { durationMs, offsetMs, dims, pauses: [], errors: [], cam })
   return summarizeProject(dir)
 })
 
 ipcMain.handle('delete-clip', async (_e, { dir, clipId }) => {
+  guardPath(dir, 'carpeta del proyecto')
   const proj = readProjectJson(dir)
   if (!proj) throw new Error('project.json no encontrado')
   proj.clips = (proj.clips || []).filter((c) => c.id !== clipId)
@@ -1071,6 +894,7 @@ ipcMain.handle('delete-clip', async (_e, { dir, clipId }) => {
 })
 
 ipcMain.handle('reorder-clips', async (_e, { dir, orderedIds }) => {
+  guardPath(dir, 'carpeta del proyecto')
   const proj = readProjectJson(dir)
   if (!proj) throw new Error('project.json no encontrado')
   const byId = new Map((proj.clips || []).map((c) => [c.id, c]))
@@ -1080,6 +904,7 @@ ipcMain.handle('reorder-clips', async (_e, { dir, orderedIds }) => {
 })
 
 ipcMain.handle('rename-project', async (_e, { dir, name }) => {
+  guardPath(dir, 'carpeta del proyecto')
   const proj = readProjectJson(dir)
   if (!proj) throw new Error('project.json no encontrado')
   proj.name = name || proj.name
@@ -1088,10 +913,11 @@ ipcMain.handle('rename-project', async (_e, { dir, name }) => {
 })
 
 ipcMain.handle('delete-project', async (_e, dir) => {
-  try { await shell.trashItem(dir); return { ok: true } } catch (err) { return { ok: false, error: err.message } }
+  try { guardPath(dir, 'carpeta del proyecto'); await shell.trashItem(dir); return { ok: true } } catch (err) { return { ok: false, error: err.message } }
 })
 
 ipcMain.handle('set-compose-opts', async (_e, { dir, opts }) => {
+  guardPath(dir, 'carpeta del proyecto')
   const proj = readProjectJson(dir)
   if (!proj) throw new Error('project.json no encontrado')
   proj.compose_opts = { ...DEFAULT_OPTS, ...(proj.compose_opts || {}), ...(opts || {}) }
@@ -1099,7 +925,7 @@ ipcMain.handle('set-compose-opts', async (_e, { dir, opts }) => {
   return proj.compose_opts
 })
 
-// ---- IPC: compose / iterate (headless Claude Code + video-use) -------------
+// ---- IPC: compose / iterate (headless agent + video-use) -------------
 
 // Success = the REQUESTED final(s) exist (per opts.aspect). Invalidates both
 // cached posters so the new render gets fresh thumbnails.
@@ -1116,115 +942,225 @@ function composeSuccess(dir, opts) {
   }
 }
 
-// Persist the Claude Code session id on the project so a later edit can resume
+// Persist each provider's session id so a later edit can resume
 // the SAME conversation (remembers prior changes).
-function saveAgentSession(dir) {
+function saveAgentSession(dir, provider) {
   return (id) => {
     const proj = readProjectJson(dir)
     if (!proj) return
-    proj.agentSession = id
+    providers.setSession(proj, provider, id)
     writeProjectJson(dir, proj)
   }
 }
-function resumeIdFor(dir, resume) {
+// Histórico de coste por proyecto (evento `result` del agente).
+function saveAgentRun(dir, kind, provider) {
+  return (info) => {
+    const proj = readProjectJson(dir)
+    if (!proj) return
+    proj.agentRuns = proj.agentRuns || []
+    proj.agentRuns.push({ kind, provider, at: stamp(), ...info })
+    writeProjectJson(dir, proj)
+  }
+}
+function resumeIdFor(dir, resume, provider) {
   if (!resume) return null
   const proj = readProjectJson(dir)
-  return (proj && proj.agentSession) || null
+  return providers.sessionFor(proj, provider)
+}
+function projectCtx(dir) {
+  return { hasScript: fs.existsSync(path.join(dir, 'script.md')), skillContext: providers.skillContext() }
 }
 
-ipcMain.handle('compose-project', async (_e, { dir, opts, resume }) =>
-  runAgentJob(dir, dir, composePrompt(opts), composeSuccess(dir, opts), 'Lanzando Claude Code (video-use)…',
-    { resumeId: resumeIdFor(dir, resume), onSession: saveAgentSession(dir) }))
-ipcMain.handle('iterate-project', async (_e, { dir, feedback, opts, resume }) =>
-  runAgentJob(dir, dir, iteratePrompt(feedback, opts), composeSuccess(dir, opts), 'Aplicando cambios…',
-    { resumeId: resumeIdFor(dir, resume), onSession: saveAgentSession(dir) }))
+ipcMain.handle('compose-project', async (_e, { dir, opts, resume }) => {
+  guardPath(dir, 'carpeta del proyecto')
+  const provider = agent.selectedProvider()
+  return agent.runAgentJob(dir, dir, prompts.composePrompt(opts, projectCtx(dir)), composeSuccess(dir, opts), 'Iniciando montaje (video-use)…', {
+    provider, resumeId: resumeIdFor(dir, resume, provider), onSession: saveAgentSession(dir, provider), onResult: saveAgentRun(dir, 'compose', provider),
+    logDir: path.join(dir, 'edit'), maxTurns: 400,
+  })
+})
+ipcMain.handle('iterate-project', async (_e, { dir, feedback, opts, resume }) => {
+  guardPath(dir, 'carpeta del proyecto')
+  const provider = agent.selectedProvider()
+  return agent.runAgentJob(dir, dir, prompts.iteratePrompt(feedback, opts, projectCtx(dir)), composeSuccess(dir, opts), 'Aplicando cambios…', {
+    provider, resumeId: resumeIdFor(dir, resume, provider), onSession: saveAgentSession(dir, provider), onResult: saveAgentRun(dir, 'iterate', provider),
+    logDir: path.join(dir, 'edit'), maxTurns: 300,
+  })
+})
 
 // Does this project already have a saved conversation to continue?
 ipcMain.handle('agent-session', async (_e, dir) => {
   const proj = readProjectJson(dir)
-  return { hasSession: !!(proj && proj.agentSession) }
+  const provider = agent.selectedProvider()
+  return { hasSession: !!providers.sessionFor(proj, provider), provider }
 })
 
-ipcMain.handle('agent-status', async (_e, key) => {
-  const job = agentJobs.get(key)
-  if (!job) return null
-  return {
-    status: job.status,
-    log: job.log.slice(-200),
-    events: (job.events || []).slice(-200),
-    error: job.error || null,
-    result: job.result || null,
-  }
-})
-
-ipcMain.handle('agent-cancel', async (_e, key) => {
-  const job = agentJobs.get(key)
-  if (job && job.child && job.status === 'running') {
-    job.status = 'cancelled'
-    try { job.child.kill('SIGTERM') } catch { /* gone */ }
-    return { ok: true }
-  }
-  return { ok: false }
+ipcMain.handle('agent-status', async (_e, key) => agent.status(key))
+ipcMain.handle('agent-cancel', async (_e, key) => agent.cancel(key))
+ipcMain.handle('agent-log', async (_e, key) => {
+  const st = agent.status(key)
+  if (!st || !st.logFile) return ''
+  try { const t = fs.readFileSync(st.logFile, 'utf8'); return t.slice(-20000) } catch { return '' }
 })
 
 // ---- IPC: scripts (style profile + script writing) -------------------------
 
 function scriptsDir(root) { return path.join(root, '_scripts') }
+function pace(root) { return readJson(path.join(scriptsDir(root), 'pace.json'), null) }
+function feedbackPairs(root) {
+  const fd = path.join(scriptsDir(root), 'feedback')
+  if (!fs.existsSync(fd)) return []
+  return fs.readdirSync(fd).filter((f) => f.endsWith('.final.md')).map((f) => f.replace(/\.final\.md$/, '')).sort().reverse()
+}
+function scriptCtx(root) { return { pace: pace(root), feedbackPairs: feedbackPairs(root) } }
 
 ipcMain.handle('scripts-status', async (_e, root) => {
   if (!root) return { hasProfile: false }
-  return { hasProfile: fs.existsSync(path.join(scriptsDir(root), 'style_profile.md')) }
+  guardRoot(root)
+  const sd = scriptsDir(root)
+  const hasProfile = fs.existsSync(path.join(sd, 'style_profile.md'))
+  let corpus = 0
+  try { corpus = fs.readdirSync(path.join(sd, 'corpus')).filter((f) => f.endsWith('.txt')).length } catch { /* none */ }
+  let profileMtime = 0
+  try { profileMtime = fs.statSync(path.join(sd, 'style_profile.md')).mtimeMs } catch { /* none */ }
+  return { hasProfile, corpus, profileMtime, pace: pace(root), feedbackPairs: feedbackPairs(root).length }
 })
 
-ipcMain.handle('analyze-channel', async (_e, { root, channel }) => {
+ipcMain.handle('analyze-channel', async (_e, { root, channel, incremental }) => {
+  guardRoot(root)
   const sd = scriptsDir(root)
   fs.mkdirSync(path.join(sd, 'corpus'), { recursive: true })
-  return runAgentJob('style', sd, analyzePrompt(channel),
-    () => (fs.existsSync(path.join(sd, 'style_profile.md')) ? { ok: true } : null),
-    'Analizando tu canal con yt-dlp…')
+  const inc = !!incremental && fs.existsSync(path.join(sd, 'style_profile.md'))
+  return agent.runAgentJob('style', sd, prompts.analyzePrompt(channel, { incremental: inc }),
+    () => (fs.existsSync(path.join(sd, 'style_profile.md')) ? { ok: true, pace: pace(root) } : null),
+    inc ? 'Actualizando tu perfil con los vídeos nuevos…' : 'Analizando tu canal con yt-dlp…', { maxTurns: 150 })
 })
 
+function scriptResult(p) {
+  return () => {
+    if (!fs.existsSync(p)) return null
+    const text = fs.readFileSync(p, 'utf8')
+    const srcPath = p.replace(/\.md$/, '.sources.md')
+    const sources = fs.existsSync(srcPath) ? fs.readFileSync(srcPath, 'utf8') : ''
+    return { path: p, text, sources, words: wordCount(text) }
+  }
+}
+
 ipcMain.handle('generate-script', async (_e, { root, topic, opts }) => {
+  guardRoot(root)
   const sd = scriptsDir(root)
   fs.mkdirSync(path.join(sd, 'drafts'), { recursive: true })
   const draftPath = path.join(sd, 'drafts', `g_${stamp()}.md`)
-  return runAgentJob('script', sd, generatePrompt(topic, opts, draftPath),
-    () => (fs.existsSync(draftPath) ? { path: draftPath, text: fs.readFileSync(draftPath, 'utf8') } : null),
-    'Redactando guion en tu estilo…')
+  writeJson(draftPath.replace(/\.md$/, '.brief.json'), { topic, opts, created: stamp() })
+  return agent.runAgentJob('script', sd, prompts.generatePrompt(topic, opts, draftPath, scriptCtx(root)),
+    scriptResult(draftPath), 'Redactando guion en tu estilo…', { maxTurns: 120 })
 })
 
+// Antes de reescribir se guarda una versión (drafts/versions/<name>.vN.md).
+function snapshotVersion(scriptPath) {
+  try {
+    const vd = path.join(path.dirname(scriptPath), 'versions')
+    fs.mkdirSync(vd, { recursive: true })
+    const base = path.basename(scriptPath, '.md')
+    const n = fs.readdirSync(vd).filter((f) => f.startsWith(base + '.v')).length + 1
+    const out = path.join(vd, `${base}.v${n}.md`)
+    fs.copyFileSync(scriptPath, out)
+    return out
+  } catch { return null }
+}
+
 ipcMain.handle('rewrite-script', async (_e, { root, scriptPath, feedback, opts }) => {
+  guardRoot(root); guardPath(scriptPath, 'guion')
   const sd = scriptsDir(root)
-  return runAgentJob('script', sd, rewritePrompt(scriptPath, feedback, opts),
-    () => (fs.existsSync(scriptPath) ? { path: scriptPath, text: fs.readFileSync(scriptPath, 'utf8') } : null),
-    'Reescribiendo el guion…')
+  snapshotVersion(scriptPath)
+  return agent.runAgentJob('script', sd, prompts.rewritePrompt(scriptPath, feedback, opts, scriptCtx(root)),
+    scriptResult(scriptPath), 'Reescribiendo el guion…', { maxTurns: 120 })
+})
+
+ipcMain.handle('hooks-script', async (_e, { root, scriptPath }) => {
+  guardRoot(root); guardPath(scriptPath, 'guion')
+  const sd = scriptsDir(root)
+  const out = scriptPath.replace(/\.md$/, '.hooks.md')
+  return agent.runAgentJob('hooks', sd, prompts.hooksPrompt(scriptPath, out, scriptCtx(root)),
+    () => (fs.existsSync(out) ? { path: out, text: fs.readFileSync(out, 'utf8') } : null), 'Proponiendo ganchos…', { maxTurns: 60 })
+})
+
+ipcMain.handle('script-versions', async (_e, scriptPath) => {
+  guardPath(scriptPath, 'guion')
+  const vd = path.join(path.dirname(scriptPath), 'versions')
+  const base = path.basename(scriptPath, '.md')
+  if (!fs.existsSync(vd)) return []
+  const num = (s) => parseInt((/\.v(\d+)\.md$/.exec(s) || [])[1] || '0', 10)
+  return fs.readdirSync(vd).filter((f) => f.startsWith(base + '.v')).sort((a, b) => num(b) - num(a))
+    .map((f) => ({ path: path.join(vd, f), label: 'v' + num(f), mtime: fs.statSync(path.join(vd, f)).mtimeMs }))
 })
 
 ipcMain.handle('list-scripts', async (_e, root) => {
   if (!root) return []
+  guardRoot(root)
   const dd = path.join(scriptsDir(root), 'drafts')
   if (!fs.existsSync(dd)) return []
   const out = []
   for (const f of fs.readdirSync(dd)) {
-    if (!f.endsWith('.md')) continue
+    if (!f.endsWith('.md') || /\.(sources|hooks)\.md$/.test(f)) continue
     const p = path.join(dd, f)
     const st = fs.statSync(p)
     const text = fs.readFileSync(p, 'utf8')
-    const title = (text.split('\n').find((l) => l.trim()) || f).replace(/^#+\s*/, '').slice(0, 80)
-    out.push({ path: p, title, mtime: st.mtimeMs, preview: text.slice(0, 180) })
+    const brief = readJson(p.replace(/\.md$/, '.brief.json'), null)
+    const firstLine = text.split('\n').find((l) => l.trim() && !/^[A-ZÁÉÍÓÚÑ0-9 ]{3,}$/.test(l.trim())) || f
+    const title = (brief && brief.topic ? brief.topic.split('\n')[0] : firstLine).replace(/^#+\s*/, '').slice(0, 80)
+    out.push({ path: p, title, mtime: st.mtimeMs, preview: text.slice(0, 180), words: wordCount(text), hasSources: fs.existsSync(p.replace(/\.md$/, '.sources.md')) })
   }
   out.sort((a, b) => b.mtime - a.mtime)
   return out
 })
 
-ipcMain.handle('read-script', async (_e, p) => { try { return fs.readFileSync(p, 'utf8') } catch { return '' } })
-ipcMain.handle('save-script', async (_e, { path: p, text }) => { fs.writeFileSync(p, text); return { ok: true } })
-ipcMain.handle('delete-script', async (_e, p) => { try { await shell.trashItem(p); return { ok: true } } catch { return { ok: false } } })
+ipcMain.handle('read-script', async (_e, p) => { try { guardPath(p, 'guion'); return fs.readFileSync(p, 'utf8') } catch { return '' } })
+ipcMain.handle('save-script', async (_e, { path: p, text }) => { guardPath(p, 'guion'); util.writeFileAtomic(p, text); return { ok: true } })
+ipcMain.handle('delete-script', async (_e, p) => {
+  try {
+    guardPath(p, 'guion'); await shell.trashItem(p)
+    for (const side of ['.sources.md', '.hooks.md', '.brief.json']) { try { fs.unlinkSync(p.replace(/\.md$/, side)) } catch { /* none */ } }
+    return { ok: true }
+  } catch { return { ok: false } }
+})
+
+// Cuando el usuario graba con un guion, la versión que realmente leyó es la
+// "final" y el borrador original del agente el "draft": el par se guarda en
+// _scripts/feedback/ y se usa como referencia en los siguientes prompts.
+ipcMain.handle('script-feedback', async (_e, { root, scriptPath, finalText }) => {
+  guardRoot(root); if (scriptPath) guardPath(scriptPath, 'guion')
+  const fd = path.join(scriptsDir(root), 'feedback')
+  fs.mkdirSync(fd, { recursive: true })
+  const id = scriptPath ? path.basename(scriptPath, '.md') : `g_${stamp()}`
+  // El borrador original es la v1 guardada (si existió reescritura) o el fichero tal cual.
+  let draft = ''
+  const v1 = scriptPath ? path.join(path.dirname(scriptPath), 'versions', `${id}.v1.md`) : null
+  if (v1 && fs.existsSync(v1)) draft = fs.readFileSync(v1, 'utf8')
+  else if (scriptPath && fs.existsSync(scriptPath)) draft = fs.readFileSync(scriptPath, 'utf8')
+  if (!draft || draft.trim() === (finalText || '').trim()) return { ok: false, reason: 'sin cambios respecto al borrador' }
+  fs.writeFileSync(path.join(fd, `${id}.draft.md`), draft)
+  fs.writeFileSync(path.join(fd, `${id}.final.md`), finalText || '')
+  return { ok: true, id }
+})
 
 // ---- IPC: open in Finder / external player ---------------------------------
 
-ipcMain.handle('open-path', async (_e, p) => { if (p) await shell.openPath(p) })
-ipcMain.handle('reveal-path', async (_e, p) => { if (p) shell.showItemInFolder(p) })
+const OPEN_EXT = new Set(['.mp4', '.mov', '.webm', '.m4v', '.mp3', '.wav', '.m4a', '.srt', '.md', '.txt', '.log', '.json', '.jpg', '.png'])
+ipcMain.handle('open-path', async (_e, p) => {
+  if (!p) return
+  guardPath(p, 'ruta')
+  if (!OPEN_EXT.has(path.extname(p).toLowerCase())) throw new Error('tipo de fichero no permitido')
+  await shell.openPath(p)
+})
+ipcMain.handle('export-file', async (_e, p) => {
+  guardPath(p, 'fichero')
+  const r = await dialog.showSaveDialog(mainWindow, { title: 'Guardar como…', defaultPath: path.basename(p) })
+  if (r.canceled || !r.filePath) return { ok: false }
+  fs.copyFileSync(p, r.filePath)
+  return { ok: true, path: r.filePath }
+})
+ipcMain.handle('reveal-path', async (_e, p) => { if (p) { guardPath(p, 'ruta'); shell.showItemInFolder(p) } })
 
 // ---- IPC: virtual background image ------------------------------------------
 // The renderer runs sandboxed over file://, so images are handed over as data:
@@ -1248,6 +1184,8 @@ ipcMain.handle('pick-background', async () => {
   if (r.canceled || !r.filePaths[0]) return null
   try {
     const p = r.filePaths[0]
+    const saved = (settings.get('bgAllowed', []) || []).filter((x) => x !== p)
+    settings.set('bgAllowed', [...saved, p].slice(-20))
     const dataUrl = backgroundDataUrl(p)
     return dataUrl ? { path: p, name: path.basename(p), dataUrl } : null
   } catch { return null }
@@ -1255,7 +1193,11 @@ ipcMain.handle('pick-background', async () => {
 
 ipcMain.handle('load-background', (_e, p) => {
   try {
-    const dataUrl = p ? backgroundDataUrl(p) : null
+    if (!p) return null
+    const presetDir = path.join(__dirname, '..', 'src', 'backgrounds')
+    const saved = settings.get('bgAllowed', []) || []
+    if (!isUnder(presetDir, p) && !saved.includes(p)) return null
+    const dataUrl = backgroundDataUrl(p)
     return dataUrl ? { path: p, name: path.basename(p), dataUrl } : null
   } catch { return null }
 })

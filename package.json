@@ -1,25 +1,34 @@
 {
   "name": "record-studio",
   "version": "0.1.0",
-  "description": "Grabador multicam (pantalla + webcam sincronizadas) que entrega un proyecto listo para que la skill video-use componga el vídeo final con planos automáticos y HyperFrames.",
+  "description": "Grabador multicam (pantalla + webcam sincronizadas) que entrega un proyecto listo para que la skill video-use componga el v\u00eddeo final con planos autom\u00e1ticos y HyperFrames.",
   "main": "electron/main.js",
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
-    "postinstall": "electron-rebuild -f -w node-pty-prebuilt-multiarch || true",
-    "rebuild-pty": "electron-rebuild -f -w node-pty-prebuilt-multiarch"
+    "test": "node --test \"test/**/*.test.js\"",
+    "test:camera": "electron test/manual/camera-smoke.cjs",
+    "build:camera": "node _scripts/build-camera.cjs",
+    "check": "for f in electron/*.js src/*.js; do node --check \"$f\" || exit 1; done",
+    "postinstall": "(electron-rebuild -f -w node-pty-prebuilt-multiarch || echo \"[postinstall] rebuild de node-pty fall\u00f3: la terminal embebida usar\u00e1 Terminal.app\") && node _scripts/build-camera.cjs",
+    "rebuild-pty": "electron-rebuild -f -w node-pty-prebuilt-multiarch",
+    "build:matting": "node _scripts/build-matanyone.cjs"
   },
   "author": "",
   "license": "MIT",
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
-    "electron": "^33.2.0"
+    "electron": "^33.2.0",
+    "esbuild": "0.25.12"
   },
   "dependencies": {
-    "@vpalmisano/virtual-background": "^1.0.14",
+    "@livekit/track-processors": "0.8.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "hyperframes": "^0.6.121",
     "node-pty-prebuilt-multiarch": "^0.10.1-pre.5"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

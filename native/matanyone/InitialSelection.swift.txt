@@ -1,0 +1,14 @@
+    /// Start from an explicit selection on this exact frame. No model changes.
+    public func seedSelection(_ pixelBuffer: CVPixelBuffer, mask: [Float]) throws -> MatteFrame {
+        guard !seeded, mask.count == bridge.W * bridge.H,
+              let image = bridge.imageTensor(from: pixelBuffer) else {
+            throw NSError(domain: "MatAnyoneSelection", code: 1)
+        }
+        let alpha = try engine.seed(image: image, seedMask: mask)
+        guard let buffer = bridge.alphaBuffer(from: alpha) else {
+            throw NSError(domain: "MatAnyoneSelection", code: 2)
+        }
+        seeded = true
+        return MatteFrame(alpha: buffer, timing: nil)
+    }
+
