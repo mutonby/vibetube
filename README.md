@@ -19,6 +19,7 @@ record-studio (graba N clips)  ──►  video-use (decide planos + corta + sub
 - Para montajes y guiones con IA: **Claude Code o Codex CLI**, instalado e identificado
   con tu cuenta. La app usa la configuración y autenticación de la CLI elegida.
 - Para la edición posterior: la skill `video-use` con `ffmpeg` y `ELEVENLABS_API_KEY`.
+- Para la mejora de voz con IA: **NVIDIA Studio Voice NIM** (`NVIDIA_API_KEY` o `NGC_API_KEY` en `~/.config/record-studio/.env`).
 
 ## Uso
 
@@ -73,7 +74,7 @@ existentes. Ambos reciben la ruta de la skill `video-use` incluida en esta app.
 <raíz>/<proyecto>/
 ├── project.json                 ← metadatos + lista de clips
 ├── clips/
-│   ├── clip_01/ screen.webm  webcam.webm  sync.json
+│   ├── clip_01/ screen.webm  webcam.webm  webcam_orig.webm  webcam_enhanced.wav  sync.json
 │   ├── clip_02/ ...
 │   └── ...
 └── edit/                        ← lo escribe video-use (final.mp4, _poster.jpg)
@@ -83,8 +84,10 @@ existentes. Ambos reciben la ruta de la skill `video-use` incluida en esta app.
 | Archivo | Qué es |
 |---|---|
 | `screen.webm` | captura de pantalla (sin audio) |
-| `webcam.webm` | tu cámara **+ micro** (la pista de audio maestra) |
-| `sync.json` | offset entre pistas, duración, dimensiones reales |
+| `webcam.webm` | tu cámara **+ micro** (remuxada con audio de estudio si Studio Voice está activo) |
+| `webcam_orig.webm` | copia de seguridad del audio/vídeo de cámara original sin procesar |
+| `webcam_enhanced.wav` | pista de voz limpia a 48kHz generada con NVIDIA Studio Voice NIM |
+| `sync.json` | offset entre pistas, duración, dimensiones reales y estado de mejora |
 | `project.json` | nombre, fechas, y todos los clips con sus metadatos |
 
 > **Permisos macOS:** la primera vez concede *Grabación de pantalla*, *Cámara* y
@@ -101,6 +104,36 @@ Abre la carpeta del proyecto con la skill `video-use` y pídele:
 El audio continuo sale siempre de `webcam.webm`; solo cambia el plano de vídeo.
 Los detalles del contrato (mapear varios clips, formato del EDL multicam) están en
 [`HANDOFF.md`](./HANDOFF.md).
+
+## Mejora de voz con IA (NVIDIA Studio Voice NIM)
+
+Record Studio integra **NVIDIA Studio Voice NIM (`48k-hq`)** vía gRPC para transformar automáticamente el audio del micrófono en voz con calidad de estudio profesional: suprime el eco de la habitación, ruidos de fondo, teclados y climatización, optimizando la presencia y claridad de la voz a 48 kHz.
+
+### Modos de uso:
+1. **Auto-mejora al grabar (segundo plano):** Tras parar una toma y validarse el clip, la app procesa el audio automáticamente. Se preserva una copia de seguridad (`webcam_orig.webm`) y se remuxa el audio limpio en `webcam.webm` sin re-codificar el vídeo.
+2. **Bajo demanda en la interfaz (UI):**
+   - **Por clip:** Botón ✨ en cada tarjeta de clip para procesar o re-procesar. Muestra el chip `✨ mejorando voz…` durante el cálculo y `✨ Studio Voice` al finalizar.
+   - **Proyecto completo:** Botón **`Mejorar audio (IA)`** en la cabecera de la lista de clips para procesar todos los clips del proyecto a la vez.
+   - **Barra de montaje:** Switch **`Voz de estudio (NVIDIA)`** (activo por defecto).
+3. **Uso manual por CLI:**
+   ```bash
+   # Mejorar un clip específico:
+   python video-use/helpers/enhance_voice.py --clip clips/clip_01
+
+   # Mejorar todos los clips del proyecto actual:
+   python video-use/helpers/enhance_voice.py --all
+
+   # Mejorar un archivo suelto de audio o vídeo:
+   python video-use/helpers/enhance_voice.py --input <archivo> --output <archivo_mejorado.wav>
+   ```
+   *Nota: El helper gestiona automáticamente la fragmentación con crossfade suave para tomas largas que superen los 4.5 minutos, respetando los límites de la API.*
+4. **Transcripción Whisper optimizada:** `helpers/transcribe_whisper.py` prioriza transcribir desde `webcam_enhanced.wav` si existe, logrando mayor precisión léxica y timestamps más exactos para subtítulos y SFX.
+5. **Configuración de clave API:** Guarda tu clave en `~/.config/record-studio/.env`:
+   ```env
+   NVIDIA_API_KEY=nvapi-...
+   ```
+   Si no se detecta clave o se está sin conexión, la app omite la mejora sin interrumpir la grabación ni el montaje.
+
 
 
 ## Guiones (pestaña «Guiones»)
