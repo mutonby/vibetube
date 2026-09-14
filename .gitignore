@@ -20,6 +20,9 @@ openshorts/
 openshorts-*/
 record-studio/
 rec_*/
+/skill/
+/ironman/
+/prueba-*/
 
 # Python / logs / agent artifacts
 __pycache__/
@@ -38,3 +41,9 @@ video-use/**/__pycache__/
 video-use/**/*.pyc
 video-use/**/*.egg-info/
 src/vendor/mediapipe/
+
+# Perfil de voz / guiones: los genera la app a partir de TU canal.
+# Son datos personales, no código — se quedan en local.
+/_scripts/corpus/
+/_scripts/drafts/
+/_scripts/style_profile.md

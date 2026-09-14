@@ -209,3 +209,20 @@ MatAnyone2 requiere compilar Swift/Core ML una vez. Revisión, corrección de
 inicialización y licencias del código y modelos: [native](native/README.md).
 Alternativa para otros equipos: [LiveKit](src/vendor/livekit/README.md).
 Ajustes de la app en `~/Library/Application Support/record-studio/settings.json`.
+
+## Licencia
+
+Record Studio se publica bajo licencia **MIT** (ver [LICENSE](LICENSE)).
+
+Componentes de terceros incluidos en el repositorio, cada uno con **su propia licencia**:
+
+| Componente | Ruta | Licencia |
+| --- | --- | --- |
+| `video-use` (skill de edición, Browser Use) | `video-use/` | MIT — [LICENSE](video-use/LICENSE) |
+| LiveKit track-processors + MediaPipe | `src/vendor/livekit/` | Apache-2.0 — [LICENSE](src/vendor/livekit/LICENSE-APACHE-2.0.txt), [avisos](src/vendor/livekit/THIRD-PARTY-NOTICES.txt) |
+| xterm.js | `src/vendor/xterm/` | MIT |
+| MatAnyone2Kit, EdgeSAM y sus pesos | se descargan al compilar | no son MIT — condiciones en [native/README.md](native/README.md) |
+
+Los efectos de sonido y la música se descargan **en tiempo de ejecución** desde la
+librería de HeyGen con tu propia clave: no se redistribuyen con este repositorio y
+se rigen por las condiciones de HeyGen.
