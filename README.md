@@ -6,7 +6,12 @@ hands the folder to an AI coding agent — **Claude Code or Codex** — which ed
 video for you: automatic shot selection (full-cam / screen / PiP), subtitles,
 [**HyperFrames**](https://github.com/heygen-com/hyperframes) graphics and sound effects.
 
-You record. The agent edits.
+Then it **publishes it**. The same agent reads the subtitles of the finished cut and writes five
+title options and a description with real chapters, and [**Upload-Post**](https://upload-post.com)
+pushes the video straight to YouTube, TikTok, Reels and the rest — you never open a browser.
+See [Publishing to YouTube & co.](#publishing-to-youtube--co) below.
+
+You record. The agent edits and publishes.
 
 ![Record view: source picker, screen preview and camera with the background already replaced](docs/screenshots/recording.png)
 
