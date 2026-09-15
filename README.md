@@ -1,408 +1,377 @@
 # Record Studio
 
-Grabador **multicam** de escritorio (macOS / Electron): captura tu **pantalla** y tu
-**webcam + micro** sincronizadas, organizadas en **proyectos con varios clips**, y
-entrega una carpeta lista para que la skill
-[`video-use`](https://github.com/browser-use/video-use) componga el vídeo final con
-**planos automáticos** (full-cam / pantalla / PiP) e intros/overlays de
-[**HyperFrames**](https://github.com/heygen-com/hyperframes).
+Desktop **multicam recorder** (macOS / Electron). It captures your **screen** and your
+**webcam + microphone** in sync, organises them into **projects made of several clips**, and
+hands the folder to an AI coding agent — **Claude Code or Codex** — which edits the final
+video for you: automatic shot selection (full-cam / screen / PiP), subtitles,
+[**HyperFrames**](https://github.com/heygen-com/hyperframes) graphics and sound effects.
 
+You record. The agent edits.
+
+> **Note:** the application interface is in **Spanish**. Everything else — code, docs, commit
+> history — is in English.
+
+![Projects gallery](docs/screenshots/projects.png)
+
+## How it works
+
+```mermaid
+flowchart LR
+    S["🖥️ Screen<br/>(no audio)"] --> R
+    W["🎥 Webcam + 🎙️ mic<br/>(the only audio)"] --> R
+    R["<b>Record Studio</b><br/>N synced clips"] --> P[("Project folder<br/>clips/ + sync.json")]
+    P --> A{"<b>Agent</b><br/>Claude Code<br/>or Codex"}
+    A --> V["<b>video-use</b> skill<br/>transcribe → pick shots → cut"]
+    V --> G["HyperFrames graphics<br/>+ HeyGen SFX + subtitles"]
+    G --> H["edit/final.mp4<br/>1920×1080"]
+    G --> N["edit/final_9x16.mp4<br/>1080×1920"]
 ```
-record-studio (graba N clips)  ──►  video-use (decide planos + corta + subtítulos + HyperFrames)  ──►  edit/final.mp4
+
+Every clip keeps two tracks on one timeline: `screen.webm` carries the picture only, and
+`webcam.webm` carries your camera **and the microphone** — it is the single source of audio for
+the whole project. `sync.json` stores the offset between them, so the editor can cut between
+shots without ever breaking the voice.
+
+What happens to each clip before the agent sees it:
+
+```mermaid
+flowchart LR
+    C["Raw take"] --> B["Background replaced<br/>MatAnyone2 · on-device"]
+    B --> E["Voice cleaned<br/>NVIDIA Studio Voice"]
+    E --> Q["Validated<br/>frames · size · audio hash"]
+    Q --> D["clips/clip_NN/"]
 ```
 
-## Requisitos
+## Requirements
 
-- Node.js 22+ y npm
-- macOS (usa `desktopCapturer` de Electron + permiso de Grabación de pantalla)
-- `ffmpeg` en el sistema (para los posters del histórico; Homebrew recomendado)
-- Para montajes y guiones con IA: **Claude Code o Codex CLI**, instalado e identificado
-  con tu cuenta. La app usa la configuración y autenticación de la CLI elegida.
-- Para la edición posterior: la skill `video-use` con `ffmpeg` y `ELEVENLABS_API_KEY`.
-- Para la mejora de voz con IA: **NVIDIA Studio Voice NIM** (`NVIDIA_API_KEY` o `NGC_API_KEY` en `~/.config/record-studio/.env`).
+- Node.js 22+ and npm
+- macOS (uses Electron's `desktopCapturer` plus the Screen Recording permission)
+- `ffmpeg` on your `PATH` (Homebrew recommended)
+- For AI editing and scripts: **Claude Code or Codex CLI**, installed and signed in. The app
+  reuses the configuration and authentication of whichever CLI you pick.
+- For the editing step: the `video-use` skill with `ffmpeg` and `ELEVENLABS_API_KEY`
+- For voice enhancement: **NVIDIA Studio Voice NIM** (`NVIDIA_API_KEY` or `NGC_API_KEY` in
+  `~/.config/record-studio/.env`)
 
-## Uso
+## Getting started
 
 ```bash
 npm install
 npm start
 ```
 
-### Elegir Claude Code o Codex
+**macOS permissions:** the first time, grant *Screen Recording*, *Camera* and *Microphone* to the
+app (or to Electron in dev mode) under System Settings → Privacy & Security, then relaunch. If the
+screen preview is black, check that permission and that the selected source still exists.
 
-En la barra superior, **Agente → Codex** selecciona Codex para los próximos montajes,
-iteraciones, análisis de estilo y guiones. La elección se guarda al cerrar la app;
-Claude Code sigue siendo la opción inicial. Las tareas y terminales ya abiertas
-continúan con el agente con el que arrancaron.
+## Choosing Claude Code or Codex
 
-Para usar Codex, instala su CLI si hace falta e inicia sesión desde una terminal:
+![Editor and agent options](docs/screenshots/editor.png)
+
+In the top bar, **Agente → Codex** switches the agent used for the next edits, iterations, style
+analysis and scripts. The choice persists across restarts; Claude Code is the default. Tasks and
+terminals that are already running stay on the agent they started with.
+
+To use Codex, install its CLI and sign in:
 
 ```bash
 npm install -g @openai/codex
 codex login
 ```
 
-La edición automática usa `codex exec --json` y la terminal integrada abre Codex
-interactivo. Ambos usan `workspace-write` con red habilitada para investigación y
-descargas; las tareas automáticas no solicitan aprobaciones y la terminal permite
-aprobar acciones. El modelo se hereda de tu configuración de Codex. Consulta el
-[modo no interactivo de Codex](https://learn.chatgpt.com/docs/non-interactive-mode).
+Automatic editing runs `codex exec --json`, and the built-in terminal opens Codex interactively.
+Both use `workspace-write` with network access for research and downloads; automatic tasks never
+ask for approvals, while the terminal does let you approve actions. The model is inherited from
+your Codex configuration. See [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode).
 
-Cada proyecto conserva una conversación por proveedor: al cambiar a Codex se crea
-su propia conversación y puedes volver después a la de Claude. La terminal interactiva
-continúa la última sesión del proveedor en esa carpeta. El brief de montaje se escribe
-en `AGENTS.md` para Codex y en `CLAUDE.md` para Claude, preservando las instrucciones
-existentes. Ambos reciben la ruta de la skill `video-use` incluida en esta app.
+Each project keeps **one conversation per provider**: switching to Codex starts its own thread and
+you can come back to the Claude one later. The interactive terminal resumes the provider's last
+session in that folder. The montage brief is written to `AGENTS.md` for Codex and `CLAUDE.md` for
+Claude, preserving any instructions already there. Both are given the path to the `video-use` skill
+bundled with this app.
 
-### Pestaña «Proyectos»
-1. Elige la **carpeta raíz** donde vivirán todos los proyectos.
-2. Escribe un nombre y **＋ Crear** un proyecto (se vuelve el proyecto activo).
-3. El histórico muestra cada proyecto: nº de clips, duración, fecha, y su **edición
-   final** (póster + ▶ para abrirla) si existe `edit/final.mp4`.
+## Recording
 
-### Pestaña «Grabar»
+### Projects tab
 
-1. **Elige** la pantalla o ventana. Las fuentes se agrupan por tipo y muestran su
-   nombre; la seleccionada queda señalada. **Actualizar** vuelve a cargar la lista
-   y sus miniaturas. La previsualización grande muestra la captura activa.
-2. Comprueba los **previews** de pantalla y webcam.
-3. **● Grabar** → cuenta atrás **3·2·1** → habla/demuestra.
-   - **⏸ Pausar / ▶ Seguir** dentro del mismo clip.
-   - **■ Parar** finaliza el clip y lo añade al proyecto.
-4. Repite: cada Grabar→Parar añade `clip_02`, `clip_03`… **al mismo proyecto**.
+1. Pick the **root folder** where all projects will live.
+2. Type a name and hit **＋ Create** (it becomes the active project).
+3. The gallery shows every project: clip count, duration, date, and its **final edit** (poster
+   plus ▶ to open it) when `edit/final.mp4` exists.
 
-### Enseñar la propia app mientras grabas
+### Record tab
 
-Activa **Mantener interfaz visible al grabar**, junto al botón Grabar. La opción
-se guarda entre sesiones: la ventana principal permanece abierta y capturable,
-y los controles pequeños aparecen igualmente. Desactivada, la ventana principal
-se oculta durante la toma. Selecciona la pantalla o la ventana de Record Studio
-como fuente para incluir la interfaz en el vídeo.
+1. **Pick** the screen or window. Sources are grouped by type and labelled; the selected one is
+   highlighted. **Refresh** reloads the list and its thumbnails.
+2. Check the screen and webcam **previews**.
+3. **● Record** → **3·2·1** countdown → talk or demo.
+   - **⏸ Pause / ▶ Resume** within the same clip.
+   - **■ Stop** closes the clip and adds it to the project.
+4. Repeat: every Record→Stop adds `clip_02`, `clip_03`… **to the same project**.
 
-Puedes salir del proyecto, abrir **Proyectos**, **Guiones** u otro proyecto sin
-interrumpir la toma. El grabador conserva el proyecto donde empezaste la sesión,
-independientemente de la pantalla de la app que estés mostrando. Su nombre se
-muestra en los controles pequeños.
+### Demoing the app itself while recording
 
-- **⏸ / ▶** pausa y reanuda la toma.
-- **■** guarda el clip y deja el grabador pequeño preparado para otro.
-- **●** inicia otro clip en el proyecto original, aunque estés viendo otro proyecto.
-- **↺** descarta la toma actual y vuelve a grabar en ese mismo proyecto.
-- **✓** termina la sesión del grabador.
+Turn on **Mantener interfaz visible al grabar** ("keep the interface visible while recording"), next
+to the Record button. The setting persists: the main window stays open and capturable, and the small
+floating controls appear as usual. Turned off, the main window hides during the take. Select the
+screen, or the Record Studio window itself, to include the interface in the video.
 
-La cámara y el micrófono permanecen disponibles también entre clips mientras
-esa sesión siga abierta. La navegación no cambia el destino del guardado, ni
-siquiera si se usa el guardado en memoria como alternativa al streaming a disco.
-El proyecto de la sesión no se puede borrar hasta terminarla. Durante la cuenta
-atrás y el guardado se bloquean arranques duplicados.
+You can leave the project and open **Projects**, **Scripts** or another project without interrupting
+the take. The recorder keeps writing to the project where the session started, no matter which
+screen you are showing. Its name is displayed in the floating controls.
+
+- **⏸ / ▶** pause and resume the take.
+- **■** saves the clip and leaves the small recorder ready for another.
+- **●** starts another clip in the original project, even while viewing a different one.
+- **↺** discards the current take and re-records into that same project.
+- **✓** ends the recorder session.
+
+Camera and microphone stay available between clips while that session is open. Navigating never
+changes where the clip is saved, not even when in-memory buffering is used instead of streaming to
+disk. The session's project cannot be deleted until you end it. Duplicate starts are blocked during
+the countdown and while saving.
 
 ### Teleprompter
 
-El teleprompter se abre en una ventana independiente que queda fuera de la
-captura. Puedes cargar un guion, editarlo y reiniciar su lectura. Se corrigió el
-desplazamiento que ocultaba las primeras líneas al reducir la altura de la ventana:
-reiniciar o cargar texto vuelve al principio tanto del texto como del contenedor.
-Se conservan los saltos de línea originales del guion.
+The teleprompter opens in a separate window that stays out of the capture. You can load a script,
+edit it and restart the read. Line breaks from the original script are preserved.
 
-## Estructura de un proyecto
+## Project layout
 
 ```
-<raíz>/<proyecto>/
-├── project.json                 ← metadatos + lista de clips
+<root>/<project>/
+├── project.json                 ← metadata + clip list
 ├── clips/
 │   ├── clip_01/ screen.webm  webcam.webm  webcam_orig.webm  webcam_enhanced.wav  sync.json
 │   ├── clip_02/ ...
 │   └── ...
-└── edit/                        ← lo escribe video-use (final.mp4, _poster.jpg)
-    └── final.mp4
+└── edit/                        ← written by video-use
+    └── final.mp4  final_9x16.mp4  _poster.jpg
 ```
 
-| Archivo | Qué es |
+| File | What it is |
 |---|---|
-| `screen.webm` | captura de pantalla (sin audio) |
-| `webcam.webm` | tu cámara **+ micro** (remuxada con audio de estudio si Studio Voice está activo) |
-| `webcam_orig.webm` | copia de seguridad del audio/vídeo de cámara original sin procesar |
-| `webcam_enhanced.wav` | pista de voz limpia a 48kHz generada con NVIDIA Studio Voice NIM |
-| `sync.json` | offset entre pistas, duración, dimensiones reales y estado de mejora |
-| `project.json` | nombre, fechas, y todos los clips con sus metadatos |
+| `screen.webm` | screen capture (no audio) |
+| `webcam.webm` | your camera **+ mic** (remuxed with studio audio when Studio Voice is on) |
+| `webcam_orig.webm` | backup of the untouched original camera audio/video |
+| `webcam_enhanced.wav` | clean 48 kHz voice track from NVIDIA Studio Voice NIM |
+| `sync.json` | offset between tracks, duration, real dimensions, enhancement status |
+| `project.json` | name, dates and every clip with its metadata |
 
-> **Permisos macOS:** la primera vez concede *Grabación de pantalla*, *Cámara* y
-> *Micrófono* a la app (o a Electron en modo dev) en Ajustes → Privacidad y seguridad,
-> y relanza. Si la previsualización de pantalla sale negra, comprueba ese permiso
-> y que la fuente seleccionada siga disponible.
+## Handoff to video-use
 
-## Handoff a video-use
+Open the project folder with the `video-use` skill and ask for what you want:
 
-Abre la carpeta del proyecto con la skill `video-use` y pídele:
+> "Edit this multicam recording: alternate between my camera and the screen depending on what I'm
+> saying, PiP while I explain over the demo, a HyperFrames intro, and subtitles."
 
-> "Edita esta grabación multicam: alterna entre mi cámara y la pantalla según lo que
-> digo, PiP cuando explico sobre la demo, intro con HyperFrames y subtítulos."
+Continuous audio always comes from `webcam.webm`; only the video shot changes. The full contract
+(mapping several clips, multicam EDL format) is in [`HANDOFF.md`](./HANDOFF.md).
 
-El audio continuo sale siempre de `webcam.webm`; solo cambia el plano de vídeo.
-Los detalles del contrato (mapear varios clips, formato del EDL multicam) están en
-[`HANDOFF.md`](./HANDOFF.md).
+## AI voice enhancement (NVIDIA Studio Voice NIM)
 
-## Mejora de voz con IA (NVIDIA Studio Voice NIM)
+Record Studio integrates **NVIDIA Studio Voice NIM (`48k-hq`)** over gRPC to turn microphone audio
+into studio-grade voice: it suppresses room echo, background noise, keyboards and air conditioning,
+improving presence and clarity at 48 kHz.
 
-Record Studio integra **NVIDIA Studio Voice NIM (`48k-hq`)** vía gRPC para transformar automáticamente el audio del micrófono en voz con calidad de estudio profesional: suprime el eco de la habitación, ruidos de fondo, teclados y climatización, optimizando la presencia y claridad de la voz a 48 kHz.
+**Ways to use it**
 
-### Modos de uso:
-1. **Auto-mejora al grabar (segundo plano):** Tras parar una toma y validarse el clip, la app procesa el audio automáticamente. Se preserva una copia de seguridad (`webcam_orig.webm`) y se remuxa el audio limpio en `webcam.webm` sin re-codificar el vídeo.
-2. **Bajo demanda en la interfaz (UI):**
-   - **Por clip:** Botón ✨ en cada tarjeta de clip para procesar o re-procesar. Muestra el chip `✨ mejorando voz…` durante el cálculo y `✨ Studio Voice` al finalizar.
-   - **Proyecto completo:** Botón **`Mejorar audio (IA)`** en la cabecera de la lista de clips para procesar todos los clips del proyecto a la vez.
-   - **Barra de montaje:** Switch **`Voz de estudio (NVIDIA)`** (activo por defecto).
-3. **Uso manual por CLI:**
+1. **Automatic after recording (background).** Once a take is stopped and validated, the app
+   processes the audio on its own. A backup is kept (`webcam_orig.webm`) and the clean audio is
+   remuxed into `webcam.webm` without re-encoding the video.
+2. **On demand from the UI.**
+   - **Per clip:** the ✨ button on each clip card processes or re-processes it.
+   - **Whole project:** **`Mejorar audio (IA)`** in the clip list header.
+   - **Montage bar:** the **`Voz de estudio (NVIDIA)`** switch (on by default).
+3. **Manually from the CLI:**
    ```bash
-   # Mejorar un clip específico:
+   # One clip:
    python video-use/helpers/enhance_voice.py --clip clips/clip_01
 
-   # Mejorar todos los clips del proyecto actual:
+   # Every clip in the current project:
    python video-use/helpers/enhance_voice.py --all
 
-   # Mejorar un archivo suelto de audio o vídeo:
-   python video-use/helpers/enhance_voice.py --input <archivo> --output <archivo_mejorado.wav>
+   # A standalone audio or video file:
+   python video-use/helpers/enhance_voice.py --input <file> --output <enhanced.wav>
    ```
-   *Nota: El helper gestiona automáticamente la fragmentación con crossfade suave para tomas largas que superen los 4.5 minutos, respetando los límites de la API.*
-4. **Transcripción Whisper optimizada:** `helpers/transcribe_whisper.py` prioriza transcribir desde `webcam_enhanced.wav` si existe, logrando mayor precisión léxica y timestamps más exactos para subtítulos y SFX.
-5. **Configuración de clave API:** Guarda tu clave en `~/.config/record-studio/.env`:
+   The helper automatically splits takes longer than 4.5 minutes with a soft crossfade, respecting
+   the API limits.
+4. **Whisper transcription** (`helpers/transcribe_whisper.py`) prefers `webcam_enhanced.wav` when it
+   exists, which gives better lexical accuracy and tighter timestamps for subtitles and SFX.
+5. **API key:** store it in `~/.config/record-studio/.env`:
    ```env
    NVIDIA_API_KEY=nvapi-...
    ```
-   Si no se detecta clave o se está sin conexión, la app omite la mejora sin interrumpir la grabación ni el montaje.
+   With no key, or offline, the app simply skips enhancement without interrupting recording or
+   editing.
 
+## Scripts
 
+![Scripts view](docs/screenshots/scripts.png)
 
-## Guiones (pestaña «Guiones»)
+1. **My style** — paste your channel and the agent (headless) downloads ~15 long transcripts with
+   `yt-dlp`, then writes `_scripts/style_profile.md` and `_scripts/pace.json` (your real words per
+   minute). "Update" only adds new videos to the corpus.
+2. **New script** — a topic (a URL works too) plus a short brief: length, format, type, demo, CTA,
+   things to avoid, key points. The agent researches the web, writes in your voice with a word
+   target computed from your own pace, proposes **3 hooks** and leaves the **sources** in
+   `drafts/<id>.sources.md` so you can check the numbers yourself.
+3. **Script** — edit it, ask for "Hooks" (5 alternatives) or "Rewrite" (the previous version is kept
+   in `drafts/versions/`), then "Record with this script" creates the project with `script.md` and
+   stores the draft→final pair in `_scripts/feedback/`, which the agent uses in later scripts to
+   learn how you correct it.
 
-1. **Mi estilo**: pega tu canal → el agente elegido (headless) baja ~15 transcripciones largas con
-   `yt-dlp` y escribe `_scripts/style_profile.md` + `_scripts/pace.json` (palabras/min reales).
-   «Actualizar» solo añade los vídeos nuevos al corpus.
-2. **Nuevo guion**: tema (puede ser una URL) + brief (duración, formato, tipo, demo, CTA, evitar,
-   puntos clave). El agente investiga en la web, escribe en tu voz con un objetivo de
-   palabras calculado a tu ritmo, propone **3 ganchos** y deja las **fuentes** en
-   `drafts/<id>.sources.md` para que compruebes las cifras.
-3. **Guion**: editar, «Ganchos» (5 alternativas), «Reescribir» (guarda versión previa en
-   `drafts/versions/`), «Grabar con este guion» → crea el proyecto con `script.md` y guarda el
-   par borrador→final en `_scripts/feedback/`, que el agente usa en los siguientes guiones para
-   aprender cómo corriges.
+## Recording robustness
 
-## Robustez de grabación
+- **Full HD camera.** 1920×1080 at 30 FPS is requested with no artificial browser scaling. The app
+  shows the resolution the device actually accepts and, when cropping, the resolution of the
+  resulting file. Turn off "Recortar cámara" to keep the full 1920×1080. Lower-resolution cameras
+  keep whatever they can deliver; AI background removal may reduce the frame rate.
+- **Camera compression.** The VP9 budget scales with the recorded pixels, around 16.6 Mb/s for Full
+  HD (it used to ask for 4 Mb/s at any size). Real bitrate depends on content and encoder. Cropping
+  declares the even dimensions that are actually encoded up front.
+- **Background edges.** Core Image refines the MatAnyone2 alpha with `CIGuidedFilter`, using the
+  same camera frame as guide at up to 960×540. This reduces the stair-stepping when upscaling the
+  original 288×512 mask. The person's RGB keeps capture resolution. No hair/chair heuristics are
+  added and the model's temporal memory is untouched.
+- **Background engine.** **MatAnyone2Kit** on Apple Silicon once `npm run build:matting` has run. It
+  keeps memory between frames and initialises from Vision's full person mask. Other machines use
+  LiveKit Track Processors 0.8.0. Models run locally: no account, no video leaves the machine.
+  Closing the effect does not stop the camera or its audio. Errors are reported rather than silently
+  falling back to another engine. Cut-out mistakes are still possible depending on chair and
+  lighting.
+  On Apple Silicon, **"Fondo al terminar (máxima fluidez)" is on by default**: the original camera is
+  recorded and MatAnyone2 is applied afterwards. Turn it off to record the live effect instead.
+- **Calibrate person and chair.** Mark your torso and the chair back on a still frame. With EdgeSAM
+  installed, that selection initialises MatAnyone2 so both are preserved. The camera stays visible
+  while it computes, and cancelling leaves the current cut-out untouched. Model installation and
+  tests: [native/README.md](native/README.md).
+- **Camera cropping.** Cropped pixels are materialised before reaching the encoder. This fixes the
+  black VP9 clips produced by cropping an RGBA texture with `visibleRect`. Cropping also works with
+  the window hidden, and stopping it preserves the original camera track. Files already recorded
+  with black frames cannot be recovered by this fix.
+- **Audio sync.** When recording the MatAnyone2-processed camera, the microphone (or the mix with
+  system sound) is compensated for the measured video latency. The delay is set up before the
+  recorders start and released at the end. The offset against the screen subtracts that delay.
+- **Crash safety.** MediaRecorder chunks are written to disk about every second
+  (`clips/clip_NN/*.part.webm`). If the app dies mid-take, the project shows the unfinished take and
+  offers to **recover** it.
+- **Validation.** On save, `ffprobe` measures the real duration of each track and marks the clip
+  `truncated`/`empty` when it does not match (red chip on the card). A watchdog warns in the floating
+  bar when a recorder stops delivering data for more than 3 s.
+- Low disk space warning (<2 GB) before recording, and a confirmation when closing mid-take.
+- Shortcuts: `⌘R` record/stop (Record view), `⌘⇧P` pause, `Esc` close modals; during a take `⌘⇧1`
+  pauses, `⌘⇧2` ends the clip, `⌘⇧3` discards and re-records.
 
-- **Cámara Full HD:** se solicita 1920×1080 a 30 FPS sin escalado artificial del
-  navegador. Se muestra la resolución real que acepta el dispositivo y, si hay
-  recorte, la resolución del archivo resultante. Para conservar los 1920×1080
-  completos, desactiva «Recortar cámara». Las cámaras con menos resolución
-  conservan la que puedan entregar; el fondo con IA puede reducir los FPS.
-- **Compresión de cámara:** el presupuesto de VP9 se adapta a los píxeles grabados,
-  con unos 16,6 Mb/s para Full HD (antes se pedían 4 Mb/s para cualquier tamaño).
-  El bitrate real depende del contenido y del codificador. El recorte declara
-  desde el inicio las dimensiones pares que realmente se codifican.
-- **Contorno del fondo:** Core Image refina el alpha de MatAnyone2 mediante
-  `CIGuidedFilter`, usando el mismo fotograma de cámara como guía a un máximo
-  de 960×540. Esto reduce los escalones al ampliar la máscara original de
-  288×512. El RGB de la persona conserva la resolución de captura. No se
-  añaden reglas de pelo/silla ni se altera la memoria temporal del modelo.
+## Measured performance and known limits
 
-- El fondo usa **MatAnyone2Kit** en Apple Silicon cuando se ha ejecutado
-  `npm run build:matting`. Conserva memoria entre fotogramas y usa la máscara
-  completa de persona de Vision para inicializarse. Los demás equipos usan
-  LiveKit Track Processors 0.8.0. No hay filtros propios de pelo o silla.
-  En el modo de fondo en directo, cámara, grabación y barra flotante comparten
-  el resultado procesado.
-  Los modelos se ejecutan localmente, sin cuenta ni envío de vídeo.
-  La cámara original y su audio no se
-  detienen al cerrar el efecto. Los errores del efecto se comunican; no se
-  cambia silenciosamente a otro motor.
-  El respaldo se conserva en las muestras probadas, pero no se garantiza para
-  cualquier silla o iluminación. Siguen siendo posibles errores de recorte.
-  En Apple Silicon, **«Fondo al terminar (máxima fluidez)» está activado por
-  defecto**: se graba la cámara original y se aplica MatAnyone2 automáticamente
-  después. Al desactivarlo se graba el efecto en directo. «Guardar cámara
-  original» sigue disponible para dejar el fondo al montaje manual.
-- **Calibrar persona y silla** permite señalar el torso y el respaldo en una
-  imagen fija. Con EdgeSAM instalado, esa selección inicializa MatAnyone2 para
-  conservar ambos. La cámara sigue visible mientras se calcula; cancelar no
-  altera el recorte actual. Si sales y vuelves, se avisa para repetir la selección.
-  Instalación de los modelos y pruebas: [native/README.md](native/README.md).
-- **Recalibrar fondo** reinicia el seguimiento con la cámara actual y mantiene la
-  imagen anterior hasta que el nuevo resultado esté listo. Al salir del encuadre
-  y volver, el seguimiento se recupera; puede ser necesario volver a señalar la
-  silla. La calibración se bloquea durante una toma.
-- **Recorte de cámara:** se materializan los píxeles recortados antes de enviarlos
-  al codificador. Esto corrige los clips VP9 negros que producía el recorte de una
-  textura RGBA mediante `visibleRect`. El recorte funciona también con la ventana
-  oculta y al detenerlo se conserva el track de cámara original. Los archivos ya
-  grabados con fotogramas negros no recuperan su imagen con esta corrección.
-- **Sincronización de audio:** al grabar la cámara procesada con MatAnyone2, se
-  compensa el micrófono o la mezcla con sonido del sistema según la latencia
-  medida del vídeo. El retardo se prepara antes de iniciar los grabadores y se
-  libera al terminar. El offset frente a la pantalla descuenta ese retardo.
-  La cámara original se graba sin esta compensación.
-- **Fluidez:** se conserva solo el fotograma pendiente más reciente, manteniendo
-  siempre juntos su imagen y su máscara. El transporte evita copias adicionales
-  del puente de Electron y el lector nativo reduce las copias de datos. Se
-  conservan el modelo y la resolución de salida. La captura de cámara prioriza
-  H.264 + Opus, con VP8 y VP9 como alternativas; el fondo final se codifica en
-  VP9 después de grabar. Las cámaras
-  NV12 mantienen su formato nativo hasta Core Image para reducir las conversiones
-  y las copias de píxeles a 1080p; se respeta su rango y matriz de color.
-- Los chunks del MediaRecorder se escriben a disco cada ~1 s (`clips/clip_NN/*.part.webm`).
-  Si la app muere grabando, el proyecto muestra la toma sin cerrar y permite **recuperarla**.
-- Al guardar, `ffprobe` mide la duración real de cada pista y marca el clip `truncated`/`empty`
-  si no coincide con lo esperado (chip rojo en la tarjeta). Un watchdog avisa en la barra
-  flotante si un grabador deja de entregar datos >3 s.
-- Aviso de espacio en disco (<2 GB) antes de grabar; confirmación al cerrar en mitad de una toma.
-- Atajos: `⌘R` grabar/parar (vista Grabar), `⌘⇧P` pausar, `Esc` cerrar modales; durante la toma
-  `⌘⇧1` pausa, `⌘⇧2` termina clip, `⌘⇧3` descarta y regraba.
+These are real measurements on the development machine (M1 Pro), not targets. They are kept here
+because the honest numbers matter more than the nominal ones.
 
-### Rendimiento medido y trabajo pendiente
+**13 September 2026.** The USB camera delivers 1920×1080 at 30 FPS. The synthetic Full HD encoding
+test keeps 90 frames in three seconds, both uncropped and cropped to 1388×952, checking decoded
+pixels to catch black output. That test has no AI in the path — it is not a 30 FPS measurement with
+MatAnyone2. Full HD composition with MatAnyone2 and VP9 came out around **10 FPS**, below the 12 FPS
+threshold of the manual regression. Live background smoothness is **not** considered solved.
 
-Validación del **13 de septiembre de 2026**: la cámara USB entrega 1920×1080 a
-30 FPS. La prueba de codificación con imagen sintética Full HD conserva 90
-fotogramas en tres segundos, tanto sin recortar como con recorte de 1388×952;
-se comprueban píxeles decodificados para detectar salidas negras. Es una prueba
-sin IA, no una medición de 30 FPS con MatAnyone2. La prueba de sincronización
-sigue pasando (unos 40 ms de desfase medio con procesamiento simulado y la
-cámara de la app activa). La composición Full HD con MatAnyone2 y VP9 quedó en
-unos **10 FPS** y no supera el umbral de 12 FPS de la regresión manual. No se
-considera resuelta la fluidez del fondo en directo. Resultados y muestras:
-[`recordings/camera-quality-20260913/`](recordings/camera-quality-20260913/).
+**11 September 2026.** Preview went from roughly **15 to 18 FPS**. With camera, screen and floating
+controls at once it sat around **13 FPS**, against about **11 FPS** for the previous reference clip.
+VP8 and H.264 tests did not justify changing the codec at that point. The synthetic flash-and-tone
+test, with 90 ms of simulated processing, went from about **124 ms of average offset to about 9 ms**
+in absolute value once compensation was added.
 
+**14 September 2026 — codec change.** A check with real USB footage found live VP9 storing only 120
+frames in about 18 seconds (6.6 FPS), even though the processed file reported 30 FPS by repetition.
+The screen kept about 29 FPS. Over a six-second comparison per codec, H.264 stored all 140 frames it
+received; VP9 stored 53 of 80 and VP8 132 of 150. **The camera now prefers H.264.** Chromium wraps
+it with Opus in Matroska, keeping the project's `.webm` paths; the player and FFmpeg read the file
+header. A later full test with USB and screen simultaneously stored 502 frames in 19.993 s
+(**25.06 real FPS**), with no gaps over 81 ms.
 
-En las pruebas locales del **11 de septiembre de 2026**, con el M1 Pro de
-desarrollo, la previsualización pasó de unos **15 a 18 FPS**. La prueba con cámara,
-pantalla y controles flotantes simultáneos quedó en unos **13 FPS**; el clip de
-referencia anterior tenía unos **11 FPS**. MatAnyone2 todavía no alcanza 30 FPS
-en esa configuración. Las pruebas con VP8 y H.264 no justificaron cambiar el códec.
+**30 real FPS on this USB camera is still open.** A later measurement with no AI and no encoding
+gave 25 FPS on Electron 33, with both `ideal: 30` and `exact: 30`. Electron 44.3.0 / Chromium 152,
+tested separately, gave roughly 27.7 FPS with and without H.264. Dropping the constraint, asking for
+60 ideal FPS, using the native 30.00003 FPS rate or going down to 720p did not reach 30 FPS.
+AVFoundation directly, setting the rate after startup, gave about 27.2 FPS. It has not been
+established whether the remaining limit is the device, its connection or the macOS capture path.
+The nominal 30 FPS of the output file is **not** a substitute for this measurement.
 
-La prueba sintética de destellos y tonos, con 90 ms de procesamiento simulado,
-pasó de unos **124 ms de desfase medio a unos 9 ms en valor absoluto** con la
-compensación. Esto comprueba el archivo codificado; no mide el desfase físico de
-cualquier combinación de cámara USB y micrófono. Las muestras y métricas están en
-[`recordings/camera-sync-20260911/`](recordings/camera-sync-20260911/).
+**Deferred background (14 September 2026).** On Apple Silicon the background is applied after the
+take by default. The camera is captured directly at 1080p; the preview model is paused during the
+take and the view shows the original image. The original, the chosen background and the calibration
+(image and alpha from the same frame) are stored next to the clip. The queue processes every frame
+on a 30 FPS timeline even when computing takes longer, and tracking uses video time rather than
+processing time. Jobs yield when another recording starts. The clip shows "Preparando fondo" until
+dimensions, frame count and audio have been verified; audio is copied without re-encoding and its
+hash checked before the video is replaced. Voice enhancement and montage wait for it to finish.
+An eight-second person sample held 30 FPS and took about 42 seconds to process. Output at 30 FPS
+does **not** recover frames the camera had already dropped.
 
-Desde el **14 de septiembre de 2026**, el fondo se aplica automáticamente al
-terminar por defecto en Apple Silicon. La cámara se captura directamente a
-1080p; el modelo de la previsualización se pausa durante la toma y la vista
-muestra la imagen original. El original, el fondo elegido y la calibración
-(imagen y alpha del mismo fotograma) quedan guardados junto al clip.
+The original is kept as `camera-original.webm` and the validated result replaces `webcam.webm`
+atomically. On failure the original is kept and "Reintentar fondo" appears. Reopening the project
+resumes interrupted jobs from the original. Old clips are never reprocessed.
 
-La cola procesa todos los fotogramas a una línea de tiempo de 30 FPS, aunque
-calcularlos tarde más. El seguimiento usa el tiempo del vídeo, no el tiempo de
-procesado. Los trabajos ceden el paso al empezar otra grabación. Puedes seguir
-usando la interfaz y el grabador flotante; el clip muestra «Preparando fondo»
-hasta que se hayan verificado dimensiones, número de fotogramas y audio. El
-audio se copia sin recodificar y se comprueba su hash antes de sustituir el vídeo.
-La mejora de voz y el montaje esperan a que el fondo termine.
+## Headless agent
 
-Una comprobación posterior del 14 de septiembre con imagen real de la USB
-detectó que VP9 en directo guardaba solo 120 fotogramas en unos 18 segundos
-(6,6 FPS), aunque el archivo procesado indicaba 30 FPS por repetición. La
-pantalla sí conservaba unos 29 FPS. En una comparación de seis segundos por
-códec, H.264 guardó todos los 140 fotogramas recibidos; VP9 guardó 53 de 80 y
-VP8, 132 de 150. Por eso la cámara prioriza ahora H.264. Chromium lo encapsula
-con Opus en Matroska, manteniendo las rutas `.webm` del proyecto; el reproductor
-y FFmpeg leen la cabecera del archivo. Las muestras están en
-`recordings/usb-codecs-20260914/`. La tasa real sigue dependiendo de la cámara
-y la carga del equipo; convertir a 30 FPS no recupera imágenes perdidas.
-La prueba completa posterior con USB y pantalla simultáneas guardó 502 imágenes
-en 19,993 segundos (25,06 FPS reales), sin huecos superiores a 81 ms y sin
-recortar el final de la cámara. Está en el proyecto local «Prueba fluidez USB».
+- Idle timeout (15 min without events) and a 3 h cap; cancelling kills the whole process group
+  (including ffmpeg and python). Runs are recorded in `project.json.agentRuns` with the provider,
+  duration and available metrics: cost and turns for Claude, tokens for Codex (its CLI does not
+  report a dollar cost). Full log in `edit/_agent.log` (⋯ → "Ver log completo").
+- Orphan agents from a previous run are killed at startup (`userData/agents.json`).
+- The model is inherited from the chosen CLI's configuration (`~/.claude/settings.json` or
+  `$CODEX_HOME/config.toml`, usually `~/.codex/config.toml`); it is not pinned with `--model`.
+- The HeyGen API key is read from `~/.config/record-studio/.env`.
 
-**30 FPS reales todavía pendientes en esta USB.** Una medición posterior sin
-IA ni codificación dio 25 FPS en Electron 33, tanto con `ideal: 30` como con
-`exact: 30`. Electron 44.3.0 / Chromium 152, probado aparte sin actualizar la
-app, dio aproximadamente 27,7 FPS con y sin H.264. Omitir el límite, solicitar
-60 FPS ideales, usar la frecuencia nativa de 30,00003 FPS o bajar a 720p no
-alcanzó 30 FPS. AVFoundation directo, fijando la frecuencia después del arranque,
-dio unos 27,2 FPS. Acortar la exposición y probar otro modo antiparpadeo tampoco
-resolvió el límite; se restauraron exposición automática, tiempo 157 y 50 Hz.
-No se ha demostrado todavía si el límite restante está en el dispositivo,
-su conexión o la ruta de captura de macOS. No se sustituye esta medición por
-los 30 FPS nominales del archivo final.
-
-La versión nueva incorpora una [corrección oficial de Chromium para formatos
-de cámaras USB en Tahoe](https://chromium.googlesource.com/chromium/src/+/a839ed4be785be91aaa79175ee31536938fefca7),
-pero la prueba local no basta para dar por resuelto el objetivo. Resultados y
-programa de medición: `recordings/usb-30fps-20260914/`.
-
-El original se conserva como `camera-original.webm`; el resultado validado
-sustituye `webcam.webm` de forma atómica. Si algo falla se conserva el original y
-aparece «Reintentar fondo». Al volver a abrir el proyecto se retoman los trabajos
-interrumpidos desde el original. La calibración se guarda en `camera-seed.*` y
-la imagen de fondo en `camera-background.*`. No se reprocesan clips antiguos.
-
-Validación: la prueba completa de la app graba 90 fotogramas en tres segundos a
-1920×1080, conserva audio y calibración, permite navegar a otro proyecto y
-habilita el reproductor al terminar. La muestra de persona de unos ocho segundos
-mantiene 30 FPS y tardó unos 42 segundos en procesarse en el M1 Pro de prueba.
-El coste depende del equipo y de la carga; 30 FPS de salida no garantiza recuperar
-fotogramas que la cámara ya hubiera perdido. El recorte de pelo/silla sigue
-siendo el de MatAnyone2 y puede necesitar calibración.
-
-El offset entre pantalla y cámara se mide al solicitar el arranque, evitando
-atribuir al vídeo el retraso de la notificación del codificador. El postprocesado
-no cambia ese offset ni ralentiza el audio.
-
-La navegación durante la grabación tiene pruebas automatizadas de conservación
-de cámara, destino del clip y guardado en otro proyecto visible. La comprobación
-manual completa en la app quedó pendiente cuando el usuario decidió probarla.
-
-## Agente headless
-
-- Timeout de inactividad (15 min sin eventos) y tope de 3 h; cancelar mata el grupo de procesos
-  (ffmpeg/python incluidos). Las ejecuciones se guardan en `project.json.agentRuns`
-  con el proveedor, duración y métricas disponibles: coste/turnos para Claude y tokens
-  para Codex (su CLI no comunica un coste en dólares). Log completo en `edit/_agent.log`
-  (⋯ → «Ver log completo»).
-- Los agentes huérfanos de una ejecución anterior se matan al arrancar (`userData/agents.json`).
-- El modelo se hereda de la configuración de la CLI elegida (`~/.claude/settings.json`
-  o `$CODEX_HOME/config.toml`, normalmente `~/.codex/config.toml`); no se fija con `--model`.
-- La API key de HeyGen se lee de `~/.config/record-studio/.env` o, si no existe, del `.env` de avatar-muton.
-
-## Desarrollo
+## Development
 
 ```bash
-npm run check   # node --check de todos los ficheros
-npm test        # node:test (util, prompts, agent events, rsmedia)
-npm run test:camera # efectos, cambio de fondo y recorte en Electron, sin cámara real
-npm run build:camera # empaqueta LiveKit intacto y copia su WASM local
-npm run build:matting # instala MatAnyone2 local para Apple Silicon (Swift/Core ML)
-npx electron test/manual/camera-quality.cjs /tmp/camera-quality # archivos Full HD y recortado
-npx electron test/manual/recording-finalization.cjs /tmp/camera-final # grabar → cola → vídeo final
-node test/manual/camera-finalization.cjs entrada.webm /tmp/fondo-final # MatAnyone2 + FFmpeg
-# Reprocesar una grabación local; no abre cámara ni micrófono:
-./node_modules/.bin/electron test/manual/camera-replay.cjs muestra.webm /tmp/camera-check
-# Probar desenfoque en vez de sustituir el fondo:
-./node_modules/.bin/electron test/manual/camera-replay.cjs muestra.webm /tmp/camera-blur blur
-# Regresión de clips negros al recortar (sin cámara real):
+npm run check         # node --check on every source file
+npm test              # node:test (util, prompts, agent events, rsmedia)
+npm run test:camera   # effects, background swap and cropping in Electron, no real camera
+npm run build:camera  # bundles LiveKit untouched and copies its local WASM
+npm run build:matting # installs MatAnyone2 locally for Apple Silicon (Swift/Core ML)
+
+npx electron test/manual/camera-quality.cjs /tmp/camera-quality         # Full HD and cropped files
+npx electron test/manual/recording-finalization.cjs /tmp/camera-final   # record → queue → final video
+node test/manual/camera-finalization.cjs input.webm /tmp/bg-final       # MatAnyone2 + FFmpeg
+
+# Reprocess a local recording; opens neither camera nor microphone:
+./node_modules/.bin/electron test/manual/camera-replay.cjs sample.webm /tmp/camera-check
+# Blur instead of replacing the background:
+./node_modules/.bin/electron test/manual/camera-replay.cjs sample.webm /tmp/camera-blur blur
+# Regression for black clips when cropping (no real camera):
 ./node_modules/.bin/electron test/manual/crop-encoding.cjs /tmp/camera-crop
-# Sincronización del vídeo/audio codificados, con destellos y tonos sintéticos:
+# A/V sync of the encoded files, with synthetic flashes and tones:
 ./node_modules/.bin/electron test/manual/camera-sync.cjs /tmp/camera-sync
-# Primeras líneas del teleprompter en ventanas de distintas dimensiones:
+# Teleprompter's first lines at different window sizes:
 ./node_modules/.bin/electron test/manual/teleprompter.cjs
-# Destino del grabador independiente del proyecto mostrado:
+# Recorder destination independent from the project on screen:
 node --test test/recording-navigation.test.js test/recording-sync.test.js
 ```
-MatAnyone2 requiere compilar Swift/Core ML una vez. Revisión, corrección de
-inicialización y licencias del código y modelos: [native](native/README.md).
-Alternativa para otros equipos: [LiveKit](src/vendor/livekit/README.md).
-Ajustes de la app en `~/Library/Application Support/record-studio/settings.json`.
 
-## Licencia
+MatAnyone2 needs a one-time Swift/Core ML build. Revision, initialisation fix and licences of the
+code and models: [native/README.md](native/README.md). Fallback for other machines:
+[LiveKit](src/vendor/livekit/README.md). App settings live in
+`~/Library/Application Support/record-studio/settings.json`.
 
-Record Studio se publica bajo licencia **MIT** (ver [LICENSE](LICENSE)).
+To verify the UI without hands, launch Electron with a debugging port and drive it over CDP:
 
-Componentes de terceros incluidos en el repositorio, cada uno con **su propia licencia**:
+```bash
+./node_modules/.bin/electron . --remote-debugging-port=9333
+```
 
-| Componente | Ruta | Licencia |
+## Licence
+
+Record Studio is released under the **MIT** licence (see [LICENSE](LICENSE)).
+
+Third-party components included in this repository keep **their own licences**:
+
+| Component | Path | Licence |
 | --- | --- | --- |
-| `video-use` (skill de edición, Browser Use) | `video-use/` | MIT — [LICENSE](video-use/LICENSE) |
-| LiveKit track-processors + MediaPipe | `src/vendor/livekit/` | Apache-2.0 — [LICENSE](src/vendor/livekit/LICENSE-APACHE-2.0.txt), [avisos](src/vendor/livekit/THIRD-PARTY-NOTICES.txt) |
+| `video-use` (editing skill, Browser Use) | `video-use/` | MIT — [LICENSE](video-use/LICENSE) |
+| LiveKit track-processors + MediaPipe | `src/vendor/livekit/` | Apache-2.0 — [LICENSE](src/vendor/livekit/LICENSE-APACHE-2.0.txt), [notices](src/vendor/livekit/THIRD-PARTY-NOTICES.txt) |
 | xterm.js | `src/vendor/xterm/` | MIT |
-| MatAnyone2Kit, EdgeSAM y sus pesos | se descargan al compilar | no son MIT — condiciones en [native/README.md](native/README.md) |
+| MatAnyone2Kit, EdgeSAM and their weights | downloaded at build time | not MIT — terms in [native/README.md](native/README.md) |
 
-Los efectos de sonido y la música se descargan **en tiempo de ejecución** desde la
-librería de HeyGen con tu propia clave: no se redistribuyen con este repositorio y
-se rigen por las condiciones de HeyGen.
+Sound effects and music are downloaded **at runtime** from the HeyGen library with your own key:
+they are not redistributed with this repository and are governed by HeyGen's terms.
