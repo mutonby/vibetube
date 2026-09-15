@@ -30,6 +30,13 @@ Lee también `README.md` (uso) y `HANDOFF.md` (contrato del EDL multicam entre g
 - `electron/prompts.js` — todos los prompts (compose/iterate/montageBrief + analyze/generate/
   rewrite/hooks de guiones). Funciones puras, testeadas.
 - `electron/media-protocol.js` — `rsmedia://` con Range, restringido a raíces permitidas.
+- `electron/uploadpost.js` — cliente de Upload-Post: publica `edit/final*.mp4` en YouTube y
+  compañía. La clave (`UPLOAD_POST_API_KEY`) se lee del `.env` en el proceso principal y NO llega
+  al renderer; el fichero se transmite con `fs.openAsBlob` para no cargar cientos de MB en memoria.
+  La subida es asíncrona: `POST /api/upload` devuelve `request_id` y se consulta en
+  `GET /api/uploadposts/status?request_id=`. Los títulos y la descripción con capítulos los escribe
+  el agente en `edit/publish.json` (`prompts.publishMetaPrompt`) A PARTIR DEL `.srt` del montaje:
+  si los timestamps se inventan, los capítulos de YouTube caen a mitad de frase.
 - `electron/settings.js` — ajustes durables en `userData/settings.json`.
 - `electron/awake.js` — impide que el Mac apague la pantalla o se bloquee por inactividad
   mientras hay una sesión de grabación (`prevent-display-sleep`, se suelta al terminar o si la

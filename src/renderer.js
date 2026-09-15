@@ -193,6 +193,9 @@ async function openProject(dir, stage) {
   stopCam()
   const d = await window.studio.projectDetail(dir)
   if (!d) { return }
+  // Al cambiar de proyecto se descartan títulos, descripción y resultados del
+  // anterior: si no, el panel de publicación enseña los del proyecto previo.
+  if (state.current !== d.dir) resetPublish()
   state.current = d.dir; state.currentName = d.name; state.detail = d
   renderDetail(d)
   hideAll(); el('viewProject').classList.remove('hidden')
@@ -304,10 +307,10 @@ async function renderRecClips() {
     const thumb = c.thumbDataUrl ? `style="background-image:url('${c.thumbDataUrl}')"` : ''
     card.innerHTML = `
       <div class="rc-thumb" ${thumb}><button class="rc-play" title="reproducir">${icon('play', 'icon icon-sm')}</button><span class="dur-chip">${fmtDur(c.durationMs)}</span>${clipStatusChip(c)}</div>
-      <div class="rc-row"><span>Clip ${i + 1}</span><button class="rc-del danger" title="borrar">${icon('trash', 'icon icon-sm')}</button></div>`
+      <div class="rc-row"><span>Clip ${i + 1}</span><button class="rc-del danger" title="delete">${icon('trash', 'icon icon-sm')}</button></div>`
     wireCameraPlayback(card, '.rc-play', c, d.dir)
     card.querySelector('.rc-del').addEventListener('click', async () => {
-      const ok = await openConfirm('Borrar clip', `Delete Clip ${i + 1}? It will be moved to the trash.`, { danger: true })
+      const ok = await openConfirm('Delete clip', `Delete Clip ${i + 1}? It will be moved to the trash.`, { danger: true })
       if (!ok) return
       await window.studio.deleteClip(state.current, c.id)
       renderRecClips()
@@ -443,7 +446,7 @@ function renderDetail(d) {
             <button data-a="enhance" title="Enhance audio with NVIDIA Studio Voice">${icon('sparkle', 'icon icon-sm')}</button>
             <button data-a="up" title="subir" ${i === 0 ? 'disabled' : ''}>${icon('chevron-up', 'icon icon-sm')}</button>
             <button data-a="down" title="bajar" ${i === d.clips.length - 1 ? 'disabled' : ''}>${icon('chevron-down', 'icon icon-sm')}</button>
-            <button data-a="del" class="danger" title="borrar">${icon('trash', 'icon icon-sm')}</button>
+            <button data-a="del" class="danger" title="delete">${icon('trash', 'icon icon-sm')}</button>
           </span>
         </div>`
       wireCameraPlayback(card, '.clip-play', c, d.dir)
@@ -587,13 +590,13 @@ function renderOrphans(d) {
   for (const o of list) {
     const row = document.createElement('div'); row.className = 'orphan-row'
     row.innerHTML = `<span>⚠ Unfinished take <b>${escapeHtml(o.clipId)}</b> (${escapeHtml(o.human)}${o.started ? ', ' + fmtDate(o.started) : ''}) — la app se cerró grabando.</span>
-      <button class="btn-secondary mini" data-a="rec">Recuperar</button><button class="btn-secondary danger mini" data-a="del">Descartar</button>`
+      <button class="btn-secondary mini" data-a="rec">Recover</button><button class="btn-secondary danger mini" data-a="del">Discard</button>`
     row.querySelector('[data-a="rec"]').addEventListener('click', async () => {
       try { await window.studio.clipRecover(d.dir, o.clipId); toast('✓ Toma recuperada como clip', 'ok'); await openProject(d.dir, state.stage) }
       catch (e) { toast('✗ ' + e.message, 'err', 6000) }
     })
     row.querySelector('[data-a="del"]').addEventListener('click', async () => {
-      const ok = await openConfirm('Descartar toma', `Discard ${o.clipId}? It will be moved to the trash.`, { danger: true })
+      const ok = await openConfirm('Discard take', `Discard ${o.clipId}? It will be moved to the trash.`, { danger: true })
       if (!ok) return
       await window.studio.clipDiscardPart(d.dir, o.clipId); await openProject(d.dir, state.stage)
     })
@@ -646,6 +649,164 @@ function renderResult(d) {
     b.addEventListener('click', () => window.studio.openPath(paths[b.dataset.open])))
   finalArea.querySelectorAll('[data-reveal]').forEach((b) =>
     b.addEventListener('click', () => window.studio.revealPath(paths[b.dataset.reveal])))
+  renderPublish(d)
+}
+
+// ---- publicación (Upload-Post) ---------------------------------------------------
+
+// Estado vivo del panel: perfiles de la cuenta, metadatos generados por el agente
+// y la elección actual. No se persiste: publish.json en edit/ es la fuente.
+const publish = { profiles: null, error: null, meta: null, titleIdx: 0, busy: false, results: null }
+
+function resetPublish() {
+  publish.meta = null; publish.titleIdx = 0; publish.titleEdited = null
+  publish.descEdited = null; publish.results = null; publish.busy = false
+  // profiles/error/platforms son de la cuenta, no del proyecto: se conservan.
+}
+
+function publishFiles(d) {
+  const out = []
+  if (d.hasFinal) out.push({ aspect: '169', label: '16:9 · YouTube', path: d.finalPath })
+  if (d.hasFinal9x16) out.push({ aspect: '916', label: '9:16 · Shorts/Reels/TikTok', path: d.final9x16Path })
+  return out
+}
+
+async function renderPublish(d) {
+  const card = el('publishCard')
+  const body = el('publishBody')
+  if (!card || !body) return
+  const files = publishFiles(d)
+  card.classList.toggle('hidden', !files.length)
+  if (!files.length) return
+
+  if (!publish.profiles && !publish.error) {
+    body.innerHTML = '<div class="empty">Checking your Upload-Post account…</div>'
+    const r = await window.studio.uploadPostProfiles()
+    if (r.ok) { publish.profiles = r.profiles; publish.platforms = r.platforms; publish.account = r.account }
+    else { publish.error = r.error; publish.platforms = r.platforms || [] }
+  }
+  if (publish.meta === null) {
+    const cached = await window.studio.publishMetaRead(d.dir)
+    publish.meta = cached && cached.ok ? cached.meta : false
+  }
+
+  if (publish.error) {
+    body.innerHTML = `<div class="empty">Publishing is off: <b>${escapeHtml(publish.error)}</b><br>
+      Add <code>UPLOAD_POST_API_KEY=…</code> to <code>~/.config/record-studio/.env</code> and reopen the project.
+      You can get the key at <code>upload-post.com</code>.</div>`
+    return
+  }
+
+  const profiles = publish.profiles || []
+  if (!profiles.length) {
+    body.innerHTML = '<div class="empty">Your Upload-Post account has no profiles with connected accounts yet.</div>'
+    return
+  }
+  const sel = publish.profile && profiles.find((p) => p.username === publish.profile)
+  const prof = sel || profiles[0]
+  publish.profile = prof.username
+  const meta = publish.meta || null
+  const titles = (meta && meta.titles) || []
+  const chosenTitle = publish.titleEdited != null ? publish.titleEdited : (titles[publish.titleIdx] || d.name)
+
+  body.innerHTML = `
+    <div class="pub-row">
+      <label class="opt">Profile
+        <select id="pubProfile">${profiles.map((p) =>
+          `<option value="${escapeHtml(p.username)}"${p.username === prof.username ? ' selected' : ''}>${escapeHtml(p.username)} · ${p.platforms.length} connected</option>`).join('')}</select>
+      </label>
+      <label class="opt">File
+        <select id="pubFile">${files.map((f, i) =>
+          `<option value="${f.aspect}"${i === 0 ? ' selected' : ''}>${escapeHtml(f.label)}</option>`).join('')}</select>
+      </label>
+      <label class="opt">YouTube visibility
+        <select id="pubPrivacy">
+          <option value="private" selected>private</option>
+          <option value="unlisted">unlisted</option>
+          <option value="public">public</option>
+        </select>
+      </label>
+    </div>
+    <div class="pub-platforms">${(publish.platforms || [])
+      .filter((pl) => prof.platforms.includes(pl.id))
+      .map((pl) => `<label class="chip"><input type="checkbox" data-pf="${pl.id}"${pl.id === 'youtube' ? ' checked' : ''}> ${escapeHtml(pl.label)}</label>`).join('')
+      || '<span class="muted">This profile has no video platform connected.</span>'}</div>
+    ${titles.length ? `<div class="pub-titles">${titles.map((t, i) =>
+      `<label class="chip"><input type="radio" name="pubTitle" data-ti="${i}"${i === publish.titleIdx ? ' checked' : ''}> ${escapeHtml(t)}</label>`).join('')}</div>` : ''}
+    <input id="pubTitleInput" type="text" placeholder="Title" value="${escapeHtml(chosenTitle)}">
+    <textarea id="pubDesc" rows="8" placeholder="Description. Hit “Titles &amp; description” and the agent writes it from the subtitles, chapters included.">${escapeHtml((publish.descEdited != null ? publish.descEdited : (meta && meta.description)) || '')}</textarea>
+    <div class="pub-actions">
+      <button id="pubGo" class="btn-primary"${publish.busy ? ' disabled' : ''}>${publish.busy ? 'Publishing…' : 'Publish'}</button>
+      <span id="pubMsg" class="muted">${publish.busy ? 'Upload queued, waiting for the platforms…' : ''}</span>
+    </div>
+    ${publish.results ? `<div class="pub-results">${publish.results.map((r) =>
+      r.ok ? `<div class="ok">✓ ${escapeHtml(r.platform)} — <a href="#" data-url="${escapeHtml(r.url || '')}">${escapeHtml(r.url || 'published')}</a></div>`
+           : `<div class="bad">✗ ${escapeHtml(r.platform)} — ${escapeHtml(r.error || 'failed')}</div>`).join('')}</div>` : ''}`
+
+  el('pubProfile').addEventListener('change', (e) => { publish.profile = e.target.value; renderPublish(d) })
+  body.querySelectorAll('[data-ti]').forEach((r) => r.addEventListener('change', () => {
+    publish.titleIdx = Number(r.dataset.ti); publish.titleEdited = null; renderPublish(d)
+  }))
+  el('pubTitleInput').addEventListener('input', (e) => { publish.titleEdited = e.target.value })
+  el('pubDesc').addEventListener('input', (e) => { publish.descEdited = e.target.value })
+  body.querySelectorAll('[data-url]').forEach((a) => a.addEventListener('click', (e) => {
+    e.preventDefault(); if (a.dataset.url) window.studio.openExternal(a.dataset.url)
+  }))
+  el('pubGo').addEventListener('click', () => doPublish(d, files))
+}
+
+async function doPublish(d, files) {
+  const platforms = [...document.querySelectorAll('[data-pf]')].filter((c) => c.checked).map((c) => c.dataset.pf)
+  if (!platforms.length) return toast('Pick at least one platform', 'bad')
+  const aspect = el('pubFile').value
+  const file = files.find((f) => f.aspect === aspect)
+  const title = el('pubTitleInput').value.trim()
+  if (!title) return toast('The title cannot be empty', 'bad')
+  const okToPublish = await openConfirm('Publish', `Publish “${title}” to ${platforms.join(', ')}?`
+    + ` (${file.label}, YouTube visibility: ${el('pubPrivacy').value})`, { danger: true })
+  if (!okToPublish) return
+
+  publish.busy = true; publish.results = null; renderPublish(d)
+  const res = await window.studio.uploadPostPublish({
+    profile: publish.profile,
+    platforms,
+    title,
+    description: el('pubDesc').value,
+    tags: (publish.meta && publish.meta.tags) || [],
+    youtubePrivacy: el('pubPrivacy').value,
+    videoPath: file.path,
+  })
+  if (!res.ok) {
+    publish.busy = false; renderPublish(d)
+    return toast('✗ ' + res.error, 'bad')
+  }
+  // La subida es asíncrona: se consulta hasta que deja de estar en proceso.
+  for (let i = 0; i < 120; i++) {
+    await new Promise((r) => setTimeout(r, 3000))
+    const st = await window.studio.uploadPostStatus(res.requestId)
+    if (!st.ok) continue
+    const msg = el('pubMsg'); if (msg) msg.textContent = `${st.completed}/${st.total} platforms done…`
+    if (st.done) {
+      publish.busy = false; publish.results = st.results; renderPublish(d)
+      const bad = st.results.filter((r) => !r.ok)
+      return toast(bad.length ? `✗ ${bad.length} platform(s) failed` : '✓ Published', bad.length ? 'bad' : 'ok')
+    }
+  }
+  publish.busy = false; renderPublish(d)
+  toast('Still processing on Upload-Post — check it on their dashboard', 'warn')
+}
+
+async function generatePublishMeta(d) {
+  const btn = el('pubMetaBtn')
+  if (btn) { btn.disabled = true; btn.textContent = 'Writing…' }
+  const r = await window.studio.publishMeta(d.dir, false)
+  if (btn) { btn.disabled = false; btn.innerHTML = '<svg class="icon icon-sm"><use href="#i-sparkle"/></svg> Titles &amp; description' }
+  if (!r || r.ok === false) return toast('✗ ' + ((r && r.error) || 'could not generate the metadata'), 'bad')
+  const cached = await window.studio.publishMetaRead(d.dir)
+  publish.meta = cached && cached.ok ? cached.meta : false
+  publish.titleIdx = 0; publish.titleEdited = null; publish.descEdited = null
+  renderPublish(d)
+  toast('✓ Titles and description ready', 'ok')
 }
 
 // Controles tipo segmented/picker: valor = data-attr del botón .active.
@@ -684,7 +845,7 @@ async function moveClip(clipId, delta) {
   await openProject(state.current, state.stage)
 }
 async function deleteClip(clipId, n) {
-  const ok = await openConfirm('Borrar clip', `Delete Clip ${n}? It will be moved to the trash.`, { danger: true })
+  const ok = await openConfirm('Delete clip', `Delete Clip ${n}? It will be moved to the trash.`, { danger: true })
   if (!ok) return
   await window.studio.deleteClip(state.current, clipId)
   await openProject(state.current, state.stage)

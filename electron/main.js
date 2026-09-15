@@ -13,6 +13,7 @@ const providers = require('./providers')
 const agent = require('./agent')
 const prompts = require('./prompts')
 const { AwakeLock } = require('./awake')
+const uploadpost = require('./uploadpost')
 require('./matting').install(ipcMain, app)
 const { DEFAULT_OPTS, normAspect } = prompts
 
@@ -1220,18 +1221,111 @@ ipcMain.handle('script-feedback', async (_e, { root, scriptPath, finalText }) =>
 const OPEN_EXT = new Set(['.mp4', '.mov', '.webm', '.m4v', '.mp3', '.wav', '.m4a', '.srt', '.md', '.txt', '.log', '.json', '.jpg', '.png'])
 ipcMain.handle('open-path', async (_e, p) => {
   if (!p) return
-  guardPath(p, 'ruta')
-  if (!OPEN_EXT.has(path.extname(p).toLowerCase())) throw new Error('tipo de fichero no permitido')
+  guardPath(p, 'path')
+  if (!OPEN_EXT.has(path.extname(p).toLowerCase())) throw new Error('file type not allowed')
   await shell.openPath(p)
 })
 ipcMain.handle('export-file', async (_e, p) => {
-  guardPath(p, 'fichero')
-  const r = await dialog.showSaveDialog(mainWindow, { title: 'Guardar como…', defaultPath: path.basename(p) })
+  guardPath(p, 'file')
+  const r = await dialog.showSaveDialog(mainWindow, { title: 'Save as…', defaultPath: path.basename(p) })
   if (r.canceled || !r.filePath) return { ok: false }
   fs.copyFileSync(p, r.filePath)
   return { ok: true, path: r.filePath }
 })
-ipcMain.handle('reveal-path', async (_e, p) => { if (p) { guardPath(p, 'ruta'); shell.showItemInFolder(p) } })
+ipcMain.handle('reveal-path', async (_e, p) => { if (p) { guardPath(p, 'path'); shell.showItemInFolder(p) } })
+
+ipcMain.handle('open-external', async (_e, url) => {
+  const u = String(url || '')
+  if (!/^https:\/\//i.test(u)) throw new Error('only https links can be opened')
+  await shell.openExternal(u)
+})
+
+// ---- IPC: publishing to YouTube & co. via Upload-Post ------------------------
+// The video never leaves through the renderer: main reads the file from disk and
+// streams it to the API, so the key stays in the main process.
+
+// Títulos + descripción con capítulos, generados por el agente a partir del .srt
+// del montaje. Se guardan en edit/publish.json para no repetir el gasto al
+// reabrir el proyecto.
+ipcMain.handle('publish-meta', async (_e, { dir, force }) => {
+  guardPath(dir, 'project folder')
+  const out = path.join(dir, 'edit', 'publish.json')
+  if (!force) {
+    const cached = util.readJson(out)
+    if (cached && Array.isArray(cached.titles) && cached.titles.length) return { ok: true, cached: true, meta: cached }
+  }
+  // Los montajes antiguos no siempre dejan el .srt con el mismo nombre
+  // (final_con-clash.srt, master_16x9.srt…), así que se prefiere el canónico y
+  // se cae a cualquier .srt de edit/ en vez de rendirse.
+  const editDir = path.join(dir, 'edit')
+  const preferred = ['final.srt', 'master.srt', 'final_9x16.srt']
+    .map((f) => path.join(editDir, f)).find((p) => fs.existsSync(p))
+  const anySrt = preferred || (fs.existsSync(editDir)
+    ? fs.readdirSync(editDir).filter((f) => f.toLowerCase().endsWith('.srt')).sort()
+      .map((f) => path.join(editDir, f))[0]
+    : null)
+  const srt = anySrt
+  if (!srt) return { ok: false, error: 'No subtitles found in edit/ — compose the video first (it writes final.srt).' }
+  const scriptPath = path.join(dir, 'script.md')
+  const ctx = {
+    projectName: path.basename(dir),
+    scriptPath: fs.existsSync(scriptPath) ? scriptPath : null,
+  }
+  const provider = agent.selectedProvider()
+  return agent.runAgentJob(`publish:${dir}`, dir, prompts.publishMetaPrompt(srt, out, ctx),
+    () => fs.existsSync(out), 'Writing titles and description…', {
+      provider, logDir: path.join(dir, 'edit'), maxTurns: 40,
+      onResult: saveAgentRun(dir, 'publish-meta', provider),
+    })
+})
+// Lee publish.json SANEANDO los capítulos: el modelo acierta casi siempre, pero
+// un solo capítulo de menos de 10 s hace que YouTube no muestre ninguno.
+ipcMain.handle('publish-meta-read', async (_e, dir) => {
+  guardPath(dir, 'project folder')
+  const meta = util.readJson(path.join(dir, 'edit', 'publish.json'))
+  if (!meta || !Array.isArray(meta.titles)) return { ok: false }
+  const n = uploadpost.normalizeChapters(meta.chapters)
+  if (n.usable) {
+    meta.chapters = n.chapters
+    meta.description = uploadpost.applyChapters(meta.description, n.chapters)
+  }
+  return { ok: true, meta, chaptersDropped: n.dropped, chaptersUsable: n.usable }
+})
+
+function uploadPostKey() {
+  const key = agent.serviceEnv().UPLOAD_POST_API_KEY
+  if (!key) throw new Error('No UPLOAD_POST_API_KEY in ~/.config/record-studio/.env')
+  return key
+}
+ipcMain.handle('uploadpost-profiles', async () => {
+  try {
+    const key = uploadPostKey()
+    const [account, profiles] = await Promise.all([uploadpost.validateKey(key), uploadpost.listProfiles(key)])
+    return { ok: true, account, profiles, platforms: uploadpost.VIDEO_PLATFORMS }
+  } catch (e) { return { ok: false, error: String(e.message || e), platforms: uploadpost.VIDEO_PLATFORMS } }
+})
+ipcMain.handle('uploadpost-publish', async (_e, opts) => {
+  try {
+    const o = opts || {}
+    guardPath(o.videoPath, 'video')
+    if (!Array.isArray(o.platforms) || !o.platforms.length) throw new Error('pick at least one platform')
+    if (!o.profile) throw new Error('pick an Upload-Post profile')
+    const r = await uploadpost.publish(uploadPostKey(), {
+      profile: o.profile,
+      platforms: o.platforms,
+      title: o.title,
+      description: o.description,
+      tags: o.tags,
+      youtubePrivacy: o.youtubePrivacy,
+      videoPath: o.videoPath,
+    })
+    return { ok: true, ...r }
+  } catch (e) { return { ok: false, error: String(e.message || e) } }
+})
+ipcMain.handle('uploadpost-status', async (_e, requestId) => {
+  try { return { ok: true, ...(await uploadpost.status(uploadPostKey(), String(requestId || ''))) } }
+  catch (e) { return { ok: false, error: String(e.message || e) } }
+})
 
 // ---- IPC: virtual background image ------------------------------------------
 // The renderer runs sandboxed over file://, so images are handed over as data:

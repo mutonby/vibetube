@@ -93,6 +93,7 @@ document.querySelectorAll('#pipPicker button').forEach((b) =>
 ;['optSubs', 'optModel', 'optCrop', 'optSfx', 'optVoice'].forEach((id) => on(id, 'change', persistOpts))
 on('optTone', 'blur', persistOpts)
 if (el('enhanceClipsBtn')) el('enhanceClipsBtn').addEventListener('click', enhanceAllClipsUi)
+if (el('pubMetaBtn')) el('pubMetaBtn').addEventListener('click', () => state.detail && generatePublishMeta(state.detail))
 el('modalOk').addEventListener('click', () => closeModal(el('modalInput').classList.contains('hidden') ? true : el('modalInput').value))
 el('modalCancel').addEventListener('click', () => closeModal(el('modalInput').classList.contains('hidden') ? false : null))
 el('modalInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') closeModal(el('modalInput').value) })

@@ -106,6 +106,13 @@ contextBridge.exposeInMainWorld('studio', {
   pickBackground: () => ipcRenderer.invoke('pick-background'),
   loadBackground: (p) => ipcRenderer.invoke('load-background', p),
   listPresetBackgrounds: () => ipcRenderer.invoke('list-preset-backgrounds'),
+  // Publicación en YouTube y compañía (Upload-Post)
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  uploadPostProfiles: () => ipcRenderer.invoke('uploadpost-profiles'),
+  uploadPostPublish: (opts) => ipcRenderer.invoke('uploadpost-publish', opts),
+  uploadPostStatus: (requestId) => ipcRenderer.invoke('uploadpost-status', requestId),
+  publishMeta: (dir, force) => ipcRenderer.invoke('publish-meta', { dir, force }),
+  publishMetaRead: (dir) => ipcRenderer.invoke('publish-meta-read', dir),
 
   // ajustes persistentes (userData/settings.json)
   settingsGet: () => ipcRenderer.invoke('settings-get'),

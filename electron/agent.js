@@ -139,7 +139,7 @@ function serviceEnv() {
     try {
       const txt = fs.readFileSync(envPath, 'utf8')
       for (const line of txt.split(/\r?\n/)) {
-        const m = /^\s*(HEYGEN_API_KEY|HEYGEN_API_BASE|NVIDIA_API_KEY|NGC_API_KEY|GEMINI_API_KEY|ELEVENLABS_API_KEY)\s*=\s*(.*)$/.exec(line)
+        const m = /^\s*(HEYGEN_API_KEY|HEYGEN_API_BASE|NVIDIA_API_KEY|NGC_API_KEY|GEMINI_API_KEY|ELEVENLABS_API_KEY|UPLOAD_POST_API_KEY)\s*=\s*(.*)$/.exec(line)
         if (m && !out[m[1]]) out[m[1]] = m[2].trim().replace(/^["']|["']$/g, '')
       }
     } catch { /* siguiente */ }

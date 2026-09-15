@@ -428,8 +428,47 @@ function hooksPrompt(scriptPath, outPath, ctx = {}) {
   ].join('\n')
 }
 
+// Metadatos de publicación: títulos a elegir, descripción con capítulos reales y
+// tags. Los timestamps SALEN DEL .srt del montaje, no de la imaginación del
+// modelo: si se los inventa, los capítulos de YouTube caen en mitad de una frase.
+function publishMetaPrompt(srtPath, outPath, ctx = {}) {
+  const lang = ctx.language || 'the same language the person speaks in the transcript'
+  return [
+    'You are running NON-INTERACTIVELY (headless). You are preparing the YouTube publication',
+    'of a video that has just been edited.',
+    '',
+    `READ THE SUBTITLES OF THE FINAL CUT: ${srtPath}`,
+    'That file is the ground truth for BOTH the content and the timestamps. Read it whole before',
+    'writing anything; do not skim the first lines and guess the rest.',
+    ctx.projectName ? `The project is called "${ctx.projectName}" — a hint about the topic, not a title.` : '',
+    ctx.scriptPath ? `The script it was recorded from is at ${ctx.scriptPath}; use it for names and figures.` : '',
+    '',
+    `WRITE EVERYTHING IN ${lang}.`,
+    '',
+    'Produce, as JSON:',
+    '1. `titles`: FIVE title options, each under 70 characters, each with a DIFFERENT angle:',
+    '   plain descriptive, a number or result, curiosity gap, the problem it solves, and a bold claim.',
+    '   No clickbait that the video does not deliver on. No ALL CAPS, at most one emoji and only if',
+    '   it earns its place.',
+    '2. `description`: the YouTube description. First two lines matter most — they are what shows',
+    '   above the fold, so say what the viewer gets. Then a short paragraph, then the chapter list,',
+    '   then any links mentioned in the video.',
+    '3. `chapters`: the chapter list, taken FROM THE SUBTITLE TIMESTAMPS. Rules YouTube enforces:',
+    '   the first chapter MUST start at 00:00, there must be at least three, each at least 10 s long,',
+    '   and they must be in ascending order. Format `mm:ss` (or `h:mm:ss` past an hour). Each label',
+    '   is 2-5 words naming what actually happens at that point in the transcript.',
+    '4. `tags`: 8-12 YouTube tags, lowercase, no leading "#".',
+    '',
+    'The `description` field must ALREADY CONTAIN the chapters, as `mm:ss Label` lines, one per line,',
+    'so it can be pasted as is. `chapters` is the same information in structured form.',
+    '',
+    `Write ONLY a JSON object with those four keys to: ${outPath}`,
+    'No Markdown fences, no commentary, no questions.',
+  ].filter(Boolean).join('\n')
+}
+
 module.exports = {
   DEFAULT_OPTS, normAspect, aspectGoal, optsLines, composePrompt, montageBrief, iteratePrompt,
   scriptContextLines, analyzePrompt, durationMinutes, scriptOptsLines, feedbackLines,
-  generatePrompt, rewritePrompt, hooksPrompt,
+  generatePrompt, rewritePrompt, hooksPrompt, publishMetaPrompt,
 }

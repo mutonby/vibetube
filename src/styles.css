@@ -829,3 +829,25 @@ select.mini { font-size: var(--fs-xs); padding: 2px 6px; background: var(--bg-3)
 .si-meta { font-size: var(--fs-xs); color: var(--text-3); margin-top: 2px; }
 .script-item .si-del { margin-left: 4px; }
 .srt-btn { font-size: var(--fs-xs); gap: 4px; }
+
+/* ---- Publicación (Upload-Post) ------------------------------------------- */
+.publish-body { display: flex; flex-direction: column; gap: var(--sp-3); padding: 4px 2px 2px; }
+.pub-row { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+.pub-platforms, .pub-titles { display: flex; gap: 8px; flex-wrap: wrap; }
+.pub-titles { flex-direction: column; gap: 4px; }
+.publish-body .chip {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  padding: 5px 10px; border-radius: var(--r-md); border: 1px solid var(--border-2);
+  background: var(--bg-2); font-size: 13px;
+}
+.publish-body .chip:hover { border-color: var(--accent); }
+.publish-body input[type="text"], .publish-body textarea {
+  width: 100%; padding: 9px 11px; border-radius: var(--r-md);
+  border: 1px solid var(--border-2); background: var(--bg-2); color: var(--text-1);
+  font: inherit; resize: vertical;
+}
+.pub-actions { display: flex; align-items: center; gap: 12px; }
+.pub-results { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.pub-results .ok { color: var(--ok); }
+.pub-results .bad { color: var(--danger); }
+.pub-results a { color: inherit; text-decoration: underline; cursor: pointer; }

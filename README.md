@@ -22,6 +22,8 @@ flowchart LR
     V --> G["HyperFrames graphics<br/>+ HeyGen SFX + subtitles"]
     G --> H["edit/final.mp4<br/>1920×1080"]
     G --> N["edit/final_9x16.mp4<br/>1080×1920"]
+    H --> U["<b>Upload-Post</b><br/>YouTube, TikTok, Reels…"]
+    N --> U
 ```
 
 Every clip keeps two tracks on one timeline: `screen.webm` carries the picture only, and
@@ -47,6 +49,7 @@ flowchart LR
 - For AI editing and scripts: **Claude Code or Codex CLI**, installed and signed in. The app
   reuses the configuration and authentication of whichever CLI you pick.
 - For the editing step: the `video-use` skill with `ffmpeg` and `ELEVENLABS_API_KEY`
+- For publishing: an [Upload-Post](https://upload-post.com) API key (`UPLOAD_POST_API_KEY`) in `~/.config/record-studio/.env`
 - For voice enhancement: **NVIDIA Studio Voice NIM** (`NVIDIA_API_KEY` or `NGC_API_KEY` in
   `~/.config/record-studio/.env`)
 
@@ -145,7 +148,8 @@ edit it and restart the read. Line breaks from the original script are preserved
 │   ├── clip_02/ ...
 │   └── ...
 └── edit/                        ← written by video-use
-    └── final.mp4  final_9x16.mp4  _poster.jpg
+    ├── final.mp4  final_9x16.mp4  final.srt  _poster.jpg
+    └── publish.json              ← titles, description with chapters, tags
 ```
 
 | File | What it is |
@@ -203,6 +207,36 @@ improving presence and clarity at 48 kHz.
    ```
    With no key, or offline, the app simply skips enhancement without interrupting recording or
    editing.
+
+## Publishing to YouTube & co.
+
+Once the final cut exists, the **Result** step can send it straight out through
+[Upload-Post](https://upload-post.com) — no manual upload, no browser.
+
+Before that, hit **Titles & description** and the agent reads the subtitles of the *final cut*
+(`edit/final.srt`) and writes `edit/publish.json` with:
+
+- **five title options**, each with a different angle (descriptive, a number, curiosity, the problem
+  it solves, a bold claim) — you pick one or edit it;
+- a **YouTube description** whose chapter list comes from the real subtitle timestamps, so the
+  chapters land on what is actually said, not on a guess. The first chapter starts at `00:00` and
+  each one lasts at least 10 s, which is what YouTube requires to show them;
+- **tags**.
+
+It is cached: reopening the project reuses `publish.json` instead of paying for the agent again.
+
+Then pick the profile, which file (16:9 for YouTube, 9:16 for Shorts/Reels/TikTok) and the
+platforms — only the ones that profile actually has connected are listed. YouTube visibility
+defaults to **private**, so a mistake is never published to your audience. Publishing asks for
+confirmation, then polls until every platform is done and shows the resulting links.
+
+```env
+# ~/.config/record-studio/.env
+UPLOAD_POST_API_KEY=…
+```
+
+Without that key the panel simply explains what is missing; nothing else in the app changes. The
+video is read and streamed from the main process, so the API key never reaches the renderer.
 
 ## Scripts
 

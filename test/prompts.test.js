@@ -52,3 +52,21 @@ test('analyzePrompt incremental no reconstruye de cero', () => {
   assert.match(p.analyzePrompt('https://youtube.com/@x', { incremental: true }), /INCREMENTAL UPDATE/)
   assert.match(p.analyzePrompt('https://youtube.com/@x'), /pace\.json/)
 })
+
+test('publishMetaPrompt: ata los capítulos al .srt y fija las reglas de YouTube', () => {
+  const out = p.publishMetaPrompt('/p/edit/final.srt', '/p/edit/publish.json', { projectName: 'demo', scriptPath: '/p/script.md' })
+  assert.match(out, /\/p\/edit\/final\.srt/)          // lee los subtítulos reales
+  assert.match(out, /\/p\/edit\/publish\.json/)        // escribe donde los lee la app
+  assert.match(out, /FIVE title options/)
+  assert.match(out, /00:00/)                            // primer capítulo obligatorio
+  assert.match(out, /at least three/)
+  assert.match(out, /ascending order/)
+  assert.match(out, /demo/)
+  assert.match(out, /\/p\/script\.md/)
+  assert.doesNotMatch(out, /```/)                       // sin vallas Markdown en la salida
+})
+
+test('publishMetaPrompt: sin guion no inventa una referencia a script.md', () => {
+  const out = p.publishMetaPrompt('/p/edit/final.srt', '/p/edit/publish.json', { projectName: 'demo' })
+  assert.doesNotMatch(out, /script\.md/)
+})
