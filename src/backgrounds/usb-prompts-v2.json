@@ -1,0 +1,11 @@
+{
+  "date": "2026-09-14",
+  "tool": "image_gen (built-in)",
+  "reference": "recordings/fondos-usb-20260914/referencia-v2.png",
+  "assets": [
+    "usb-estudio-natural-v2.png",
+    "usb-biblioteca-v2.png",
+    "usb-estudio-ambiente-v2.png"
+  ],
+  "prompt": "Use case: precise-object-edit. Image 1 is the EMPTY BACKGROUND EDIT TARGET. Image 2 is ONLY the UPDATED REAL USB CAMERA PERSPECTIVE AND LIGHTING REFERENCE. Revise the empty background from image1 to match the camera angle/scale seen in image2. Preserve the design style, furniture identity, restrained side decor and color palette of image1. Camera now has a more downward-pointing view: in reference the central seated person's hair is at y=8%, head centered x=52%, shoulders extend from x=25 to75%, upper torso visible through bottom, the real floor becomes visible around y=80% at left and runs down right with correct perspective. Match the newly downward-tilted projection and the room corner around x=69%; show modest extra floor at bottom, baseboard line around y=78-82% on the rear wall, coherent verticals/slight wide-angle webcam perspective. Keep all central x=28%-73%, y=4%-100% clear of decorations to receive the live person and chair. Match soft neutral-to-cool frontal daylight from reference, muted medium-light gray wall exposure, softly shaded left and brighter right. No warm cast over entire room. Photographic believable small studio, natural materials, moderate detail and optical softness. OUTPUT EMPTY ROOM ONLY: absolutely no person, no human shadow/silhouette, no chair, no foreground desk, no boxes, no dumbbells, no computer or cable copied from image2. No typography or collage. Landscape16:9, high resolution1920x1080 or larger if possible."
+}

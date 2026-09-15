@@ -1,6 +1,6 @@
 'use strict'
 
-const { app, BrowserWindow, ipcMain, desktopCapturer, dialog, shell, globalShortcut, screen } = require('electron')
+const { app, BrowserWindow, ipcMain, desktopCapturer, dialog, shell, globalShortcut, screen, powerSaveBlocker } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { spawnSync, spawn } = require('child_process')
@@ -12,6 +12,7 @@ const settings = require('./settings')
 const providers = require('./providers')
 const agent = require('./agent')
 const prompts = require('./prompts')
+const { AwakeLock } = require('./awake')
 require('./matting').install(ipcMain, app)
 const { DEFAULT_OPTS, normAspect } = prompts
 
@@ -100,6 +101,11 @@ function createWindow() {
     })
     if (r === 0) e.preventDefault()
   })
+
+  // Si la ventana se va en mitad de una toma (descartar y cerrar, o un cuelgue
+  // del renderer) nadie enviará `recording-stopped`: soltar el bloqueo aquí.
+  mainWindow.on('closed', () => awake.release())
+  mainWindow.webContents.on('render-process-gone', () => awake.release())
 }
 
 app.whenReady().then(() => {
@@ -114,7 +120,7 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('will-quit', () => { globalShortcut.unregisterAll(); stopTerminal(); agent.cancelAll() })
+app.on('will-quit', () => { globalShortcut.unregisterAll(); stopTerminal(); agent.cancelAll(); awake.release() })
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
@@ -122,6 +128,7 @@ app.on('window-all-closed', () => {
 // ---- Floating recording bar + global shortcuts -----------------------------
 
 let recordingActive = false
+const awake = new AwakeLock(powerSaveBlocker)
 
 function createFloating(initState) {
   if (floatWindow) return
@@ -164,6 +171,7 @@ function relayControl(which) {
 
 ipcMain.on('recording-started', (_e, payload) => {
   recordingActive = true
+  awake.acquire() // la pantalla no puede apagarse ni bloquearse en mitad de la toma
   if (mainWindow && !payload?.continuing) {
     const keepVisible = payload?.keepMainVisible === true
     try { mainWindow.setContentProtection(!keepVisible) } catch { /* ignore */ }
@@ -178,6 +186,7 @@ ipcMain.on('recording-started', (_e, payload) => {
 
 ipcMain.on('recording-stopped', () => {
   recordingActive = false
+  awake.release()
   globalShortcut.unregisterAll()
   destroyFloating()
   if (mainWindow) { try { mainWindow.setContentProtection(false) } catch { /* ignore */ } mainWindow.show(); mainWindow.focus() }
@@ -384,6 +393,7 @@ function findSrt(dir, base) {
 function summarizeProject(dir) {
   const proj = readProjectJson(dir)
   if (!proj) return null
+  resumeCameraJobs(dir, proj)
   const clips = proj.clips || []
   const durationMs = clips.reduce((a, c) => a + (c.duration_ms || 0), 0)
   const finalPath = path.join(dir, 'edit', 'final.mp4')
@@ -397,7 +407,7 @@ function summarizeProject(dir) {
   else if (hasFinal9x16) previewDataUrl = preview9x16DataUrl
   else if (clips.length) {
     const c0 = clips[0]
-    previewDataUrl = frameUrl(path.join(dir, c0.webcam || `clips/${c0.id}/webcam.webm`), path.join(dir, 'clips', c0.id, '_thumb.jpg'), 0.5)
+    previewDataUrl = c0.cam?.afterRecord && c0.camera_processing?.status !== 'done' ? null : frameUrl(path.join(dir, c0.webcam || `clips/${c0.id}/webcam.webm`), path.join(dir, 'clips', c0.id, '_thumb.jpg'), 0.5)
   }
   const runs = proj.agentRuns || []
   const totalCost = runs.reduce((a, r) => a + (r.cost || 0), 0)
@@ -547,7 +557,8 @@ function clipDetail(dir, c) {
     statusNote: c.status_note || '',
     enhanced,
     webcamPath,
-    thumbDataUrl: frameUrl(webcamPath, path.join(dir, 'clips', c.id, '_thumb.jpg'), 0.5),
+    cameraProcessing: c.camera_processing || null,
+    thumbDataUrl: c.cam?.afterRecord && c.camera_processing?.status !== 'done' ? null : frameUrl(webcamPath, path.join(dir, 'clips', c.id, '_thumb.jpg'), 0.5),
   }
 }
 
@@ -575,6 +586,34 @@ ipcMain.handle('set-teleprompter', async (_e, { dir, text }) => {
 // de toma, lo grabado hasta entonces sigue en disco y se puede recuperar.
 
 const openClips = new Map() // clipDir -> { fds: {screen, webcam}, bytes: {screen, webcam} }
+const cameraFinalizer = new (require('./camera-finalizer').CameraFinalizer)({
+  read: readProjectJson, write: writeProjectJson, ffmpeg: ffmpegPath, ffprobe: ffprobePath,
+  capturing: () => recordingActive || openClips.size > 0,
+  notify: payload => {
+    agent.broadcast('camera-finalized', payload)
+    if (payload.status === 'done') enhanceClipAsync(payload.dir, payload.clipId).catch(console.error)
+  },
+})
+app.on('will-quit', () => cameraFinalizer.close())
+function resumeCameraJobs(dir, project) {
+  for (const clip of project.clips || []) {
+    if (clip.cam?.afterRecord && ['queued', 'processing'].includes(clip.camera_processing?.status)) cameraFinalizer.enqueue(dir, clip.id)
+  }
+}
+function requireFinishedCameras(dir) {
+  if (readProjectJson(dir)?.clips?.some(c => c.cam?.afterRecord && c.camera_processing?.status !== 'done')) {
+    throw Error('Espera a que termine el fondo de los clips. Si alguno falló, pulsa Reintentar fondo.')
+  }
+}
+ipcMain.handle('camera-finalize-retry', async (_event, { dir, clipId }) => {
+  guardPath(dir)
+  const project = readProjectJson(dir), clip = project?.clips?.find(c => c.id === clipId)
+  if (!clip?.cam?.afterRecord || clip.camera_processing?.status !== 'failed') throw Error('Este clip no tiene un fondo pendiente de reintentar')
+  clip.camera_processing = { status: 'queued' }; writeProjectJson(dir, project)
+  cameraFinalizer.enqueue(dir, clipId)
+  return { ok: true }
+})
+
 
 function nextClipId(dir, proj) {
   const used = new Set((proj.clips || []).map((c) => c.id))
@@ -598,6 +637,18 @@ ipcMain.handle('clip-begin', async (_e, { dir }) => {
   writeJson(path.join(clipDir, 'recording.json'), { started: stamp(), clipId, status: 'recording' })
   openClips.set(clipDir, { fds, bytes: { screen: 0, webcam: 0 }, clipId, dir })
   return { clipId, clipDir }
+})
+
+function saveCameraSeed(clipDir, { width, height, pixels, alpha }) {
+  if ( !Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > 1920 || height > 1080 ||
+      !(pixels instanceof Uint8Array) || pixels.length !== width * height * 4 || !(alpha instanceof Uint8Array) || alpha.length !== 288 * 512) throw Error('Calibración de cámara inválida')
+  fs.writeFileSync(path.join(clipDir, 'camera-seed.rgba'), pixels)
+  fs.writeFileSync(path.join(clipDir, 'camera-seed.alpha'), alpha)
+  writeJson(path.join(clipDir, 'camera-seed.json'), { width, height })
+}
+ipcMain.handle('clip-camera-seed', (_e, { clipDir, ...seed }) => {
+  if (!openClips.has(clipDir)) throw Error('Clip no abierto')
+  saveCameraSeed(clipDir, seed)
 })
 
 ipcMain.handle('clip-chunk', async (_e, { clipDir, track, data }) => {
@@ -640,6 +691,16 @@ function finalizeClip(dir, clipId, meta) {
     if (fs.existsSync(part)) fs.renameSync(part, path.join(clipDir, `${t}.webm`))
   }
   try { fs.unlinkSync(path.join(clipDir, 'recording.json')) } catch { /* none */ }
+  let cameraError = ''
+  try {
+  if (meta.cam?.afterRecord && meta.cam.background) {
+    const image = meta.cam.background
+    if (!isUnder(path.join(__dirname, '..', 'src/backgrounds'), image) && !(settings.get('bgAllowed', []) || []).includes(image)) throw Error('Fondo de cámara no autorizado')
+    if (!BG_MIME[path.extname(image).toLowerCase()]) throw Error('Formato de fondo no compatible')
+    const saved = path.join(clipDir, 'camera-background' + path.extname(image).toLowerCase())
+    fs.copyFileSync(image, saved); meta.cam = { ...meta.cam, background: saved }
+  }
+  } catch (error) { cameraError = error.message }
   const sync = writeSyncJson(clipDir, meta)
   const proj = readProjectJson(dir)
   proj.clips = (proj.clips || []).filter((c) => c.id !== clipId)
@@ -647,6 +708,7 @@ function finalizeClip(dir, clipId, meta) {
     id: clipId, created: sync.created, duration_ms: sync.duration_ms, offset_ms: sync.offset_ms,
     screen: `clips/${clipId}/screen.webm`, webcam: `clips/${clipId}/webcam.webm`, dims: meta.dims,
     status: 'checking', recorder_errors: meta.errors || [],
+    ...(meta.cam?.afterRecord ? { camera_processing: cameraError ? { status: 'failed', error: cameraError } : { status: 'queued' } } : {}),
     // Qué se grabó y sobre qué fondo hay que recomponer. `cam.raw` = la pista de
     // cámara NO lleva el fondo cocido; `_scripts/rematte_cam.py` lo compone
     // después con un modelo mejor que el de tiempo real.
@@ -721,7 +783,9 @@ async function validateClipAsync(dir, clipId, expectedMs, errors) {
     if (sync) { sync.probed_ms = probed; sync.status = status; writeJson(path.join(clipDir, 'sync.json'), sync) }
   } catch { /* ignore */ }
   agent.broadcast('clip-validated', { dir, clipId, status, note: c.status_note, probed })
-  if (status === 'ok' || status === 'warning') {
+  if (c.cam?.afterRecord && c.camera_processing?.status !== 'done') {
+    if (['queued', 'processing'].includes(c.camera_processing?.status)) cameraFinalizer.enqueue(dir, clipId)
+  } else if (status === 'ok' || status === 'warning') {
     enhanceClipAsync(dir, clipId).catch((err) => console.error(`[voice] error en auto-mejora de ${clipId}:`, err.message))
   }
 }
@@ -740,6 +804,8 @@ function voicePythonBin() {
 }
 
 async function enhanceClipAsync(dir, clipId, force = false) {
+  const camera = readProjectJson(dir)?.clips?.find(c => c.id === clipId)
+  if (camera?.cam?.afterRecord && (camera.camera_processing?.status !== 'done' || camera.status === 'checking')) return { ok: false, error: 'Espera a que termine el fondo del clip' }
   const script = voiceEnhanceScript()
   if (!script) return { ok: false, error: 'script enhance_voice.py no encontrado' }
   const py = voicePythonBin()
@@ -791,6 +857,7 @@ async function enhanceClipAsync(dir, clipId, force = false) {
 }
 
 async function enhanceAllClipsAsync(dir, force = false) {
+  requireFinishedCameras(dir)
   const script = voiceEnhanceScript()
   if (!script) return { ok: false, error: 'script enhance_voice.py no encontrado' }
   const py = voicePythonBin()
@@ -879,12 +946,14 @@ ipcMain.handle('append-clip', async (_e, payload) => {
   fs.mkdirSync(clipDir, { recursive: true })
   fs.writeFileSync(path.join(clipDir, 'screen.webm'), Buffer.from(screenBuf))
   fs.writeFileSync(path.join(clipDir, 'webcam.webm'), Buffer.from(webcamBuf))
+  if (payload.seed && cam?.afterRecord) saveCameraSeed(clipDir, payload.seed)
   finalizeClip(dir, clipId, { durationMs, offsetMs, dims, pauses: [], errors: [], cam })
   return summarizeProject(dir)
 })
 
 ipcMain.handle('delete-clip', async (_e, { dir, clipId }) => {
   guardPath(dir, 'carpeta del proyecto')
+  await cameraFinalizer.cancel(dir, clipId)
   const proj = readProjectJson(dir)
   if (!proj) throw new Error('project.json no encontrado')
   proj.clips = (proj.clips || []).filter((c) => c.id !== clipId)
@@ -913,7 +982,7 @@ ipcMain.handle('rename-project', async (_e, { dir, name }) => {
 })
 
 ipcMain.handle('delete-project', async (_e, dir) => {
-  try { guardPath(dir, 'carpeta del proyecto'); await shell.trashItem(dir); return { ok: true } } catch (err) { return { ok: false, error: err.message } }
+  try { guardPath(dir, 'carpeta del proyecto'); await cameraFinalizer.cancel(dir); await shell.trashItem(dir); return { ok: true } } catch (err) { return { ok: false, error: err.message } }
 })
 
 ipcMain.handle('set-compose-opts', async (_e, { dir, opts }) => {
@@ -973,6 +1042,7 @@ function projectCtx(dir) {
 
 ipcMain.handle('compose-project', async (_e, { dir, opts, resume }) => {
   guardPath(dir, 'carpeta del proyecto')
+  requireFinishedCameras(dir)
   const provider = agent.selectedProvider()
   return agent.runAgentJob(dir, dir, prompts.composePrompt(opts, projectCtx(dir)), composeSuccess(dir, opts), 'Iniciando montaje (video-use)…', {
     provider, resumeId: resumeIdFor(dir, resume, provider), onSession: saveAgentSession(dir, provider), onResult: saveAgentRun(dir, 'compose', provider),
@@ -981,6 +1051,7 @@ ipcMain.handle('compose-project', async (_e, { dir, opts, resume }) => {
 })
 ipcMain.handle('iterate-project', async (_e, { dir, feedback, opts, resume }) => {
   guardPath(dir, 'carpeta del proyecto')
+  requireFinishedCameras(dir)
   const provider = agent.selectedProvider()
   return agent.runAgentJob(dir, dir, prompts.iteratePrompt(feedback, opts, projectCtx(dir)), composeSuccess(dir, opts), 'Aplicando cambios…', {
     provider, resumeId: resumeIdFor(dir, resume, provider), onSession: saveAgentSession(dir, provider), onResult: saveAgentRun(dir, 'iterate', provider),

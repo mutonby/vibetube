@@ -7,8 +7,8 @@ final class PersonPresence {
     private var recovery = PresenceRecovery()
     private var nextCheck: TimeInterval = 0
 
-    func shouldRestart(for buffer: CVPixelBuffer) -> Bool {
-        let now = ProcessInfo.processInfo.systemUptime
+    func shouldRestart(for buffer: CVPixelBuffer, at timestamp: TimeInterval? = nil) -> Bool {
+        let now = timestamp ?? ProcessInfo.processInfo.systemUptime
         guard now >= nextCheck else { return false }
         nextCheck = now + 0.5
         let present: Bool?

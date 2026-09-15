@@ -60,7 +60,7 @@ class CamCrop {
   }
 
   _dims() {
-    return { width: Math.max(2, Math.round(this.rect.w * this.srcW)), height: Math.max(2, Math.round(this.rect.h * this.srcH)) }
+    return { width: Math.max(2, Math.round(this.rect.w * this.srcW) & ~1), height: Math.max(2, Math.round(this.rect.h * this.srcH) & ~1) }
   }
 
   _startInsertable(track) {
@@ -115,8 +115,8 @@ class CamCrop {
       const W = v.videoWidth || self.srcW
       const H = v.videoHeight || self.srcH
       const r = self.rect
-      const w = Math.max(2, Math.round(r.w * W))
-      const h = Math.max(2, Math.round(r.h * H))
+      const w = Math.max(2, Math.round(r.w * W) & ~1)
+      const h = Math.max(2, Math.round(r.h * H) & ~1)
       if (canvas.width !== w) canvas.width = w
       if (canvas.height !== h) canvas.height = h
       try { ctx.drawImage(v, r.x * W, r.y * H, r.w * W, r.h * H, 0, 0, w, h) } catch { /* not ready */ }

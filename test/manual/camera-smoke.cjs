@@ -37,7 +37,14 @@ async function run() {
   const video = document.createElement('video'); video.muted = true; video.srcObject = output; document.body.appendChild(video); await video.play()
   const sample = () => { const c = document.createElement('canvas'); c.width = c.height = 1; c.getContext('2d').drawImage(video, 10, 10, 1, 1, 0, 0, 1, 1); return [...c.getContext('2d').getImageData(0, 0, 1, 1).data] }
   const moreFrames = async () => { const target = pipe.stats.frames + 4, start = performance.now(); while (pipe.stats.frames < target) { assert(performance.now() - start < 5000, 'No processed frames'); await sleep(30) } await sleep(100) }
-  await moreFrames(); const blue = sample(); assert(blue[2] > 220 && blue[0] < 20, 'Blue replacement failed')
+  await moreFrames()
+  if (pipe.engine === 'matanyone2') {
+    await pipe.backend.recordingSeed()
+    const pausedFrames = pipe.stats.frames
+    await sleep(250); assert(pipe.stats.frames === pausedFrames, 'Preview inference continued during raw recording')
+    pipe.backend.resumeAfterRecording(); await moreFrames()
+  }
+  const blue = sample(); assert(blue[2] > 220 && blue[0] < 20, 'Blue replacement failed')
   await pipe.setBackground(image('#00ff00')); await moreFrames(); const green = sample(); assert(green[1] > 220 && green[2] < 20, 'Background switch retained stale image')
   await pipe.setBackground(null); await pipe.setBlurAmount(.5); await moreFrames()
   await pipe.setBlur(false); await sleep(250); const untouched = sample()

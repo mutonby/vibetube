@@ -41,7 +41,7 @@ async function main() {
   fs.writeFileSync(path.join(output, 'stats.json'), JSON.stringify(result, null, 2))
   fs.writeFileSync(path.join(output, 'native.log'), diagnostics)
   for (const [name, pixels] of [['recovered', alpha], ['fresh', reference]]) {
-    fs.writeFileSync(path.join(output, name + '.pgm'), Buffer.concat([Buffer.from('P5\n288 512\n255\n'), pixels]))
+    fs.writeFileSync(path.join(output, name + '.pgm'), Buffer.concat([Buffer.from(`P5\n${Math.round(width * Math.min(1, 960 / width, 540 / height))} ${Math.round(height * Math.min(1, 960 / width, 540 / height))}\n255\n`), pixels]))
   }
   assert.ok(solid > 1000, 'reference must contain a person')
   assert.ok(result.opaqueRecovery > .95, 'return must recover opaque foreground')

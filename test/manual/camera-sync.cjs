@@ -7,14 +7,14 @@ const fs=require('node:fs'),path=require('node:path'),os=require('node:os')
 const {execFileSync}=require('node:child_process')
 const root=path.resolve(__dirname,'../..'),out=process.argv[2]||'/tmp/rs-camera-sync'
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'rs-sync-'));app.setPath('userData',temp)
-const matte=async()=>{await new Promise(r=>setTimeout(r,90));return {alpha:new Uint8Array(288*512).fill(255),milliseconds:90}}
+const matte=async({width,height})=>{await new Promise(r=>setTimeout(r,90));return {width,height,alpha:new Uint8Array(width*height).fill(255),milliseconds:90}}
 ipcMain.handle('matting-start',()=> 'sync-test');ipcMain.handle('matting-stop',()=>{})
-ipcMain.handle('matting-frame',matte)
+ipcMain.handle('matting-frame',(_event,data)=>matte(data))
 ipcMain.on('matting-connect',e=>{const port=e.ports[0];port.on('message',async({data})=>{
- if(!data || !(data.rgba instanceof Uint8Array) || data.rgba.length!==data.width*data.height*4) {
+ if(!data || !(data.pixels instanceof Uint8Array) || data.pixels.length!==data.width*data.height*4) {
   port.postMessage({error:'Invalid camera pixel transport'});return
  }
- port.postMessage(await matte())
+ port.postMessage(await matte(data))
 });port.start()})
 const timeout=setTimeout(()=>app.exit(1),45000)
 app.whenReady().then(async()=>{

@@ -15,15 +15,24 @@ También se expone `seedSelection`, una entrada a `engine.seed` para una máscar
 explícita sobre el mismo fotograma. No cambia el cálculo del modelo.
 
 `RecordMatte` mantiene una instancia del modelo mientras la persona permanece
-en escena y recibe RGBA por
-stdin. Responde con alpha8 de 288×512. Vision inicializa con el fotograma de cámara
+en escena y recibe píxeles por
+stdin. La cámara NV12 mantiene sus planos Y/UV, rango y matriz de color; se evita
+convertirla a RGBA y transportar 8 MB por frame. Las imágenes de calibración y
+las otras fuentes conservan la ruta RGBA. El modelo calcula alpha8 de 288×512. `MatteUpsampler` lo refina con
+`CIGuidedFilter` de Core Image, usando la imagen del mismo fotograma como guía.
+El alpha devuelto conserva la proporción de la cámara, con un máximo de
+960×540; la imagen RGB original sigue a resolución completa (hasta 1920×1080).
+El límite de la guía evita el coste de procesar y transportar un alpha Full HD
+por cada frame. No hay umbrales ni reglas específicas para la silueta.
+Vision inicializa con el fotograma de cámara
 completo. El renderer envía cada fotograma a resolución completa; Core Image
 hace el redimensionado igual que en el programa de la comparativa. Hay una sola petición
 en curso: imagen y máscara nunca se mezclan entre fotogramas. La cámara sin
 persona muestra el fondo elegido o el desenfoque, sin publicar el primer frame
 original mientras se carga el modelo.
 
-El adaptador de Electron limita dimensiones, comprueba el dueño de la sesión,
+El adaptador de Electron valida las dimensiones de cada alpha contra las esperadas
+para su fotograma (incluidas las respuestas sin persona), comprueba el dueño de la sesión,
 aplica plazos de espera y cierra el proceso al parar la cámara, cerrar el renderer
 o salir. El micrófono original se conserva. `CamPipe` selecciona MatAnyone2 cuando
 está instalado, y LiveKit en las otras plataformas; un fallo de MatAnyone2 se
@@ -132,3 +141,56 @@ ese retardo. La opción de cámara original no aplica esta compensación.
 `electron test/manual/camera-sync.cjs /tmp/camera-sync` graba destellos y tonos
 simultáneos con un modelo simulado que tarda 90 ms; analiza el VP9/Opus resultante
 con FFmpeg y comprueba el desfase, además de preservar el track original.
+
+## Resolución y refinado (13 de septiembre de 2026)
+
+La captura solicita 1920×1080 a 30 FPS y muestra el tamaño real del dispositivo.
+VP9 recibe un presupuesto de unos 16,6 Mb/s a Full HD; el recorte conserva su
+resolución nativa, no se amplía artificialmente para aparentar 1080p.
+`MatteUpsamplerTests` comprueba opacidad, transparencia y seguimiento de una
+diagonal en una guía Full HD. La prueba con el fotograma de cámara anterior
+reduce los escalones visibles frente al escalado bilineal del alpha de 288×512.
+No garantiza que MatAnyone2 clasifique bien todos los pelos o la silla.
+
+Protocolo de entrada: cuatro UInt32 LE (ancho, alto, formato y flags), seguidos
+de los píxeles. Formato 0 = RGBA8; 1 = NV12 con Y y UV contiguos. Flags: bit 0
+selecciona BT.709 (sin él, BT.601), bit 1 indica rango completo. El adaptador
+valida tamaños, paridad de NV12 y matriz de color antes de escribir.
+
+La respuesta inicial `kind=0` sigue declarando la cuadrícula del
+modelo (288×512), sin payload. Las respuestas 1–3 incluyen el alpha refinado con
+ancho y alto calculados por `min(1, 960/anchoEntrada, 540/altoEntrada)` y redondeo
+al entero más cercano, mínimo 1. Reconstruir con `npm run build:matting` y recargar
+la aplicación al actualizar este protocolo; el renderer comprueba la misma forma.
+
+Prueba del archivo codificado: `npx electron test/manual/camera-quality.cjs /tmp/calidad`.
+Prueba de regresión del fondo: `npx electron test/manual/camera-replay.cjs entrada.webm /tmp/fondo`.
+El argumento opcional `--1080` permite probar la composición Full HD con un clip
+anterior; si el original es 720p, esta variante comprueba el pipeline y no aporta
+detalle nuevo a la imagen original.
+
+## Procesado después de grabar (14 de septiembre de 2026)
+
+`electron/camera-finalizer.js` decodifica el original con FFmpeg a 30 FPS,
+procesa cada fotograma secuencialmente y compone su RGB con su propio alpha.
+El tiempo de cálculo no altera los timestamps del vídeo ni del audio; este se
+copia sin recodificar y se verifica su hash. La cola cede el paso a nuevas tomas,
+conserva el original y solo sustituye la cámara tras verificar el resultado.
+
+`RecordMatte --fps 30` utiliza el índice de fotograma / 30 para las comprobaciones
+de presencia. Una pausa en el procesado no equivale a una ausencia de la persona.
+La ruta en directo sigue usando el reloj real cuando no se proporciona `--fps`.
+
+El bit 2 de los flags de entrada indica una inicialización desde alpha: después
+de los píxeles se envían 288×512 bytes de máscara. Se pasan a `seedSelection` como
+floats normalizados, sin umbrales ni reglas para muebles. Ese fotograma solo
+inicializa el seguimiento y no avanza el reloj ni se añade al vídeo final.
+`recordingSeed()` pausa el adaptador y espera al frame en curso antes de guardar
+su imagen y su alpha juntos; conserva así la calibración que existía antes de
+grabar. El flujo de captura original no pasa por la IA.
+
+Pruebas: `npm test`, `swift test -c release --package-path native/matanyone`,
+`npx electron test/manual/recording-finalization.cjs /tmp/camera-final` y
+`node test/manual/camera-finalization.cjs entrada.webm /tmp/fondo-final`.
+La prueba de la app usa proyectos aislados, audio sintético y servicios externos
+desactivados; comprueba original, calibración, 1080p/30, navegación y reproductor.

@@ -2,9 +2,9 @@ import Foundation
 import CoreVideo
 import MatAnyoneKitCoreML
 import Darwin
-import Accelerate
 
-// Binary stdin: width/height (LE UInt32), then top-down RGBA8.
+// Binary stdin: width/height/format/color flags (LE UInt32), then pixels.
+// format 0 = RGBA8; 1 = NV12. Color flags: bit 0 = BT.709, bit 1 = full range.
 // stdout: kind/width/height/microseconds (LE UInt32); kind 0 = ready,
 // kind 1 = matte, kind 2 = no person seeded; both include alpha8 bytes.
 // kind 3 = matte after losing a guided selection on reentry; renew the selection.
@@ -42,7 +42,14 @@ guard var matte = MatAnyoneMatte() else {
     FileHandle.standardError.write(Data("MatAnyone2: no se pudieron cargar los modelos\n".utf8)); exit(1)
 }
 let presence = PersonPresence()
-let args = Array(CommandLine.arguments.dropFirst())
+let upsampler = MatteUpsampler()
+var args = Array(CommandLine.arguments.dropFirst())
+var offlineFps: Double?
+var frameIndex = 0
+if args.first == "--fps" {
+    guard args.count >= 2, let fps = Double(args[1]), fps.isFinite, fps >= 1, fps <= 120 else { exit(2) }
+    offlineFps = fps; args.removeFirst(2)
+}
 var selection: [Double]?
 var selectionLost = false
 if !args.isEmpty {
@@ -52,30 +59,20 @@ if !args.isEmpty {
 }
 send(0, matte.workingWidth, matte.workingHeight, 0)
 do {
-    while let header = try readExactly(8) {
+    while let header = try readExactly(16) {
         let w = Int(header.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self)) })
         let h = Int(header.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 4, as: UInt32.self)) })
-        guard w > 0, h > 0, w <= 1920, h <= 1080,
-              let rgba = try readExactly(w * h * 4) else { throw NSError(domain: "RecordMatte", code: 2) }
+        let format = header.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self)) }
+        let flags = header.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 12, as: UInt32.self)) }
+        guard w > 0, h > 0, w <= 1920, h <= 1080, format <= 1, flags <= 7,
+              format == 0 || (w % 2 == 0 && h % 2 == 0),
+              let pixels = try readExactly(format == 0 ? w * h * 4 : w * h * 3 / 2) else { throw NSError(domain: "RecordMatte", code: 2) }
+        let seedMask = flags & 4 != 0 ? try readExactly(matte.workingWidth * matte.workingHeight) : nil
+        if flags & 4 != 0 && seedMask == nil { throw NSError(domain: "RecordMatte", code: 2) }
         try autoreleasepool {
             let start = Date()
-            var buffer: CVPixelBuffer?
-            let attrs = [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary
-            guard CVPixelBufferCreate(nil, w, h, kCVPixelFormatType_32BGRA, attrs, &buffer) == kCVReturnSuccess,
-                  let buffer else { throw NSError(domain: "RecordMatte", code: 3) }
-            CVPixelBufferLockBaseAddress(buffer, [])
-            let dst = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
-            let stride = CVPixelBufferGetBytesPerRow(buffer)
-            rgba.withUnsafeBytes { bytes in
-                var source = vImage_Buffer(data: UnsafeMutableRawPointer(mutating: bytes.baseAddress!), height: vImagePixelCount(h), width: vImagePixelCount(w), rowBytes: w * 4)
-                var target = vImage_Buffer(data: dst, height: vImagePixelCount(h), width: vImagePixelCount(w), rowBytes: stride)
-                let channels: [UInt8] = [2, 1, 0, 3]
-                channels.withUnsafeBufferPointer { map in
-                    _ = vImagePermuteChannels_ARGB8888(&source, &target, map.baseAddress!, vImage_Flags(kvImageNoFlags))
-                }
-            }
-            CVPixelBufferUnlockBaseAddress(buffer, [])
-            if presence.shouldRestart(for: buffer) {
+            let buffer = try cameraPixelBuffer(width: w, height: h, pixels: pixels, format: format, colorFlags: flags & 3)
+            if presence.shouldRestart(for: buffer, at: offlineFps.map { Double(frameIndex) / $0 }) {
                 guard let fresh = MatAnyoneMatte() else {
                     throw NSError(domain: "RecordMatte", code: 4, userInfo: [NSLocalizedDescriptionKey: "No se pudo recuperar el seguimiento"])
                 }
@@ -84,26 +81,19 @@ do {
                 FileHandle.standardError.write(Data("MatAnyone2: nueva sesión tras salir y volver\n".utf8))
             }
             var alpha: CVPixelBuffer?
-            if let points = selection {
+            if let seedMask {
+                alpha = try matte.seedSelection(buffer, mask: seedMask.map { Float($0) / 255 }).alpha
+            } else if let points = selection {
                 let mask = try SelectionSeed.mask(frame: buffer, points: points, width: matte.workingWidth, height: matte.workingHeight)
                 alpha = try matte.seedSelection(buffer, mask: mask).alpha
                 selection = nil
             } else { matte.matte(buffer) { alpha = $0.alpha } }
-            var bytes = Data(count: matte.workingWidth * matte.workingHeight)
-            if let alpha {
-                CVPixelBufferLockBaseAddress(alpha, .readOnly)
-                let base = CVPixelBufferGetBaseAddress(alpha)!, row = CVPixelBufferGetBytesPerRow(alpha)
-                bytes.withUnsafeMutableBytes { dest in
-                    for y in 0..<matte.workingHeight {
-                        dest.baseAddress!.advanced(by: y*matte.workingWidth)
-                            .copyMemory(from: base.advanced(by: y*row), byteCount: matte.workingWidth)
-                    }
-                }
-                CVPixelBufferUnlockBaseAddress(alpha, .readOnly)
-            }
+            let size = MatteUpsampler.dimensions(width: w, height: h)
+            let bytes = try alpha.map { try upsampler.refine(alpha: $0, frame: buffer) } ?? Data(count: size.width * size.height)
             // No person yet: transparent foreground, never expose the raw room.
             let micros = UInt32(min(Date().timeIntervalSince(start)*1_000_000, Double(UInt32.max)))
-            send(alpha == nil ? 2 : (selectionLost ? 3 : 1), matte.workingWidth, matte.workingHeight, micros, bytes)
+            send(alpha == nil ? 2 : (selectionLost ? 3 : 1), size.width, size.height, micros, bytes)
+            if seedMask == nil { frameIndex += 1 }
         }
     }
 } catch {

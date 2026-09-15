@@ -3,7 +3,7 @@
 // Grabación: fuentes, dispositivos, previews, blur/crop/mezcla, MediaRecorder por chunks.
 
 window.installFloatPreview(window.studio, () => {
-  return { source: state.pipe?.previewSource || el('camPreview'), rect: state.crop ? state.cropRect : null }
+  return { source: rec.capturePipe ? el('camPreview') : state.pipe?.previewSource || el('camPreview'), rect: state.crop ? state.cropRect : null }
 })
 
 // ---- Source picker (record view) -------------------------------------------
@@ -142,7 +142,7 @@ async function startCamPreview() {
   stopStream(state.rawCam)
   state.rawCam = null
 
-  const RES = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+  const RES = { width: { ideal: 1920, max: 1920 }, height: { ideal: 1080, max: 1080 }, frameRate: { ideal: 30 }, resizeMode: 'none' }
   const AUD = { echoCancellation: true, noiseSuppression: true }
   // Robust acquisition: a saved deviceId can go stale (device unplugged/renamed)
   // and `{exact}` then throws OverconstrainedError. So we try the saved devices
@@ -175,6 +175,7 @@ async function startCamPreview() {
         background: state.bgData ? state.bgData.dataUrl : null,
       })
     }
+    state.nativeCamera = state.pipe?.engine === 'matanyone2'
     state.camStream = out
     el('camPreview').srcObject = out
     const st = raw.getVideoTracks()[0].getSettings()
@@ -203,6 +204,11 @@ async function startCamPreview() {
 }
 
 function syncBlurUi() {
+  const finalRow = el('finalBackgroundRow'), finalToggle = el('finalBackgroundToggle'), finalHint = el('finalBackgroundHint')
+  if (finalRow) finalRow.style.display = state.blur && state.nativeCamera ? '' : 'none'
+  if (finalToggle) { finalToggle.checked = state.finalBackground; finalToggle.disabled = !!(state.recording || state.recordingBusy || state.rawRecord) }
+  if (finalHint) finalHint.style.display = state.blur && state.nativeCamera && state.finalBackground && !state.rawRecord ? '' : 'none'
+
   // El interruptor de "grabar sin fondo" solo tiene sentido si hay algo que
   // componer; sin blur, lo que se graba ya es el crudo.
   const rawRow = el('rawRecordRow')
@@ -281,14 +287,13 @@ async function clearBackground() {
   if (state.pipe && state.pipe.setBackground) await state.pipe.setBackground(null)
 }
 
-function toggleRawRecord() {
+async function toggleRawRecord() {
   if (state.recording) { el('rawRecordToggle').checked = !!state.rawRecord; return } // fijo durante la captura
   state.rawRecord = el('rawRecordToggle').checked
   persist({ rawrecord: !!state.rawRecord })
-  log(state.rawRecord
-    ? '🎥 se guardará la cámara original, con la habitación visible; el fondo se aplica al montar'
-    : '⚠ la cámara se grabará con el fondo cocido: lo que recorte mal ya no se podrá corregir',
-    state.rawRecord ? '' : 'warn')
+  syncBlurUi()
+  if (!state.rawRecord && !state.finalBackground && state.blur && !state.pipe) await recalibrateBackground()
+  log(state.rawRecord ? 'Se guardará la cámara original para el montaje' : state.finalBackground ? 'El fondo se aplicará automáticamente al terminar' : 'Se grabará el fondo de la previsualización')
 }
 
 async function toggleBlur() {
@@ -349,6 +354,7 @@ function frameAspect() {
 function saveCropRect() { persist({ crop_rect: state.cropRect }) }
 
 function syncCropUi() {
+  updateCameraResolution()
   const on = state.crop
   el('cropToggle').checked = on
   el('cropTools').style.display = on ? '' : 'none'
@@ -364,6 +370,7 @@ function syncCropUi() {
 
 // Place the box DOM element from the normalised rect (over the video element).
 function positionCropBox() {
+  updateCameraResolution()
   const box = el('cropBox')
   const r = state.cropRect
   box.style.left = (r.x * 100) + '%'
@@ -606,6 +613,7 @@ function stopMeter() { if (meterRAF) cancelAnimationFrame(meterRAF); meterRAF = 
 function updateReady() {
   const ready = state.selectedSourceId && state.screenStream?.active && !pendingSourceId && state.camStream && state.current && !state.recording && !state.recalibrating && !state.selectingCamera
   updateScreenCaption()
+  updateCameraResolution()
   el('recBtn').disabled = !ready || !!state.recordingSession || state.recordingBusy
   el('camSelect').disabled = el('micSelect').disabled = !!(state.recording || state.recordingBusy)
   el('keepMainVisible').checked = state.keepMainVisible
@@ -617,6 +625,19 @@ function updateReady() {
   el('recalibrateHelp').hidden = !state.blur
   if (state.recordingSession) el('recHint').textContent = `El grabador guarda en: ${state.recordingSession.name}`
   else if (state.selectedSourceId && !state.recording) el('recHint').textContent = `Grabarás en: ${state.currentName}`
+}
+
+function updateCameraResolution() {
+  const settings = state.rawCam?.getVideoTracks()[0]?.getSettings()
+  if (!settings?.width || !settings?.height) { el('camCap').textContent = 'Cámara'; return }
+  let text = `Cámara · ${settings.width} × ${settings.height}`
+  if (state.crop && state.cropRect) {
+    const r = state.cropRect
+    const width = Math.max(2, Math.round(settings.width * r.w)) & ~1
+    const height = Math.max(2, Math.round(settings.height * r.h)) & ~1
+    text += ` · Recorte: ${width} × ${height}`
+  }
+  el('camCap').textContent = text
 }
 
 // ---- Countdown -------------------------------------------------------------
@@ -686,6 +707,23 @@ function pickMime(withAudio) {
   return 'video/webm'
 }
 
+function cameraVideoBitrate(width, height) {
+  // Preserve detail at the actual recorded resolution instead of using the
+  // same 4 Mbps budget for both a small crop and a full-HD camera.
+  return Math.round(Math.max(6_000_000, Math.min(20_000_000, width * height * 8)))
+}
+
+function pickCameraMime(withAudio = true) {
+  // Full-HD USB noise/detail overwhelms the live VP9 encoder on some Macs.
+  // Chromium muxes H.264 + Opus as Matroska; playback and FFmpeg detect the
+  // container from its header, including our existing .webm clip paths.
+  for (const codec of ['h264', 'vp8', 'vp9']) {
+    const mime = `video/webm;codecs=${codec}${withAudio ? ',opus' : ''}`
+    if (MediaRecorder.isTypeSupported(mime)) return mime
+  }
+  return 'video/webm'
+}
+
 const rec = {
   clip: null,                 // { clipDir, clipId } abierto en main
   queue: { screen: Promise.resolve(), webcam: Promise.resolve() },
@@ -747,7 +785,7 @@ async function startRecording(fromFloat = false) {
   if (!state.screenStream?.active || pendingSourceId || !state.camStream) { log('faltan streams o la fuente sigue abriéndose', 'err'); setStatus('listo'); updateReady(); return }
   state.chunks = { screen: [], webcam: [] }
   rec.clip = null; rec.streamFail = false; rec.errors = []; rec.pauses = []
-  rec.audioDelayMs = 0
+  rec.audioDelayMs = 0; rec.cameraSeed = null; rec.capturePipe = null
   state.recordingSession ||= { dir: state.current, name: state.currentName }
   rec.projectDir = state.recordingSession.dir
   rec.projectName = state.recordingSession.name
@@ -757,12 +795,31 @@ async function startRecording(fromFloat = false) {
   try { rec.clip = await window.studio.clipBegin(rec.projectDir) }
   catch (e) { rec.streamFail = true; rec.errors.push('no pude abrir el clip en disco: ' + e.message); log('⚠ ' + e.message + ' — grabo en memoria', 'err') }
 
-  // Record the processed preview by default. Raw recording is an explicit
-  // alternative for users who will apply a background during offline editing.
-  const camBase = (state.rawRecord && state.rawCam) ? state.rawCam : state.camStream
+  // Capture original frames for automatic final matting. The live model pauses
+  // during capture so it cannot compete with the video encoder.
+  if (rec.cam.afterRecord && state.pipe) {
+    const pipe = state.pipe
+    try {
+      if (pipe.backend?.recordingSeed) {
+        rec.cameraSeed = await pipe.backend.recordingSeed()
+        if (rec.cameraSeed && rec.clip) {
+          await window.studio.clipCameraSeed({ clipDir: rec.clip.clipDir, ...rec.cameraSeed })
+          rec.cameraSeed = null
+        }
+      }
+    } catch (error) {
+      if (pipe.backend) pipe.backend.paused = false
+      if (rec.clip) { await window.studio.clipAbort(rec.clip.clipDir); rec.clip = null }
+      endRecordingSession(); throw error
+    }
+    rec.capturePipe = pipe
+    state.camStream = state.rawCam; el('camPreview').srcObject = state.rawCam
+    log('Grabación original a 1080p; el fondo se aplicará al terminar')
+  }
+  const camBase = ((state.rawRecord || rec.cam.afterRecord) && state.rawCam) ? state.rawCam : state.camStream
   let camForRec = camBase
   state.recWebcamDims = null
-  if (state.crop && state.cropRect && window.CamCrop) {
+  if (!rec.cam.afterRecord && state.crop && state.cropRect && window.CamCrop) {
     try {
       state.cropPipe = new CamCrop()
       camForRec = state.cropPipe.start(camBase, state.cropRect)
@@ -777,7 +834,7 @@ async function startRecording(fromFloat = false) {
   // otherwise the plain mic. webcam.webm stays the single audio source.
   const recVideoTrack = camForRec.getVideoTracks()[0]
   let recAudioTrack = (state.sysAudio && state.mixedAudioTrack) ? state.mixedAudioTrack : state.camStream.getAudioTracks()[0]
-  if (recAudioTrack && !state.rawRecord && state.pipe?.engine === 'matanyone2') {
+  if (recAudioTrack && !rec.cam.afterRecord && !state.rawRecord && state.pipe?.engine === 'matanyone2') {
     rec.audioSync = new RecordingAudioSync()
     recAudioTrack = await rec.audioSync.start(recAudioTrack, () => state.pipe?.stats.latencyMs || 0)
   }
@@ -798,7 +855,10 @@ async function startRecording(fromFloat = false) {
   }))
 
   const screenRec = new MediaRecorder(state.screenStream, { mimeType: pickMime(false), videoBitsPerSecond: 8_000_000 })
-  const camRec = new MediaRecorder(camForRec, { mimeType: pickMime(true), videoBitsPerSecond: 4_000_000 })
+  const camSize = state.recWebcamDims || recVideoTrack.getSettings()
+  state.recWebcamDims = { width: camSize.width || state.dims.webcam.width, height: camSize.height || state.dims.webcam.height }
+  const camRec = new MediaRecorder(camForRec, { mimeType: pickCameraMime(!!recAudioTrack), videoBitsPerSecond: cameraVideoBitrate(camSize.width || 1920, camSize.height || 1080) })
+  console.log('[rec] camera encoder', camRec.mimeType, camRec.videoBitsPerSecond, 'bps')
   const onData = (track) => (e) => {
     if (!e.data || !e.data.size) return
     const now = performance.now()
@@ -808,8 +868,6 @@ async function startRecording(fromFloat = false) {
   }
   screenRec.ondataavailable = onData('screen')
   camRec.ondataavailable = onData('webcam')
-  screenRec.onstart = () => { state.starts.screen = performance.now() }
-  camRec.onstart = () => { state.starts.webcam = performance.now() }
   const onErr = (label) => (e) => {
     const m = (e.error && e.error.message) || 'error desconocido'
     console.error(`[rec] ${label} error`, e.error)
@@ -820,7 +878,17 @@ async function startRecording(fromFloat = false) {
   camRec.onerror = onErr('cámara')
   state.recorders = [screenRec, camRec]
   state.tStart = performance.now()
-  try { screenRec.start(1000); camRec.start(1000) } catch (e) { console.error('[rec] start() falló', e); log('⚠ no se pudo iniciar la grabación: ' + e.message, 'err'); rec.errors.push('start: ' + e.message) }
+  try {
+    // onstart is delivered after encoder startup and can lag by many frames.
+    // Measure the capture requests, not the notification delivery times.
+    state.starts.screen = performance.now(); screenRec.start(1000)
+    state.starts.webcam = performance.now(); camRec.start(1000)
+  } catch (error) {
+    await stopRecorders(state.recorders); await drainChunks()
+    rec.audioSync?.stop(); rec.audioSync = null; teardownCrop()
+    if (rec.clip) { await window.studio.clipAbort(rec.clip.clipDir); rec.clip = null }
+    resumeRecordingPreview(); endRecordingSession(); throw error
+  }
 
   state.recording = true; state.paused = false; state.pausedTotal = 0
   updateReady()
@@ -909,6 +977,7 @@ async function stopRecording(returnToMain = true) {
   rec.audioSync?.stop(); rec.audioSync = null
   teardownCrop() // stop the crop pipeline once the recorder has flushed its last frame
   state.recording = false; state.paused = false
+  resumeRecordingPreview()
   renderSources()
   updateReady()
   try { await saveClip(durationMs) } // sets the post-save hint last, so it isn't overwritten
@@ -918,6 +987,14 @@ async function stopRecording(returnToMain = true) {
   else endRecordingSession()
   updateReady()
   setStatus('hecho', 'done')
+}
+function resumeRecordingPreview() {
+  const pipe = rec.capturePipe; rec.capturePipe = null
+  if (pipe && state.pipe === pipe && state.rawCam?.active) {
+    pipe.backend.resumeAfterRecording()
+    state.camStream = pipe.outputStream
+    el('camPreview').srcObject = state.camStream
+  }
 }
 // Floating ● button: start the next clip without reopening the main window.
 let floatArming = false
@@ -944,8 +1021,11 @@ function endRecordingSession() {
 // Qué se grabó y sobre qué fondo hay que recomponerlo. Sin esto, el paso
 // offline tendría que adivinar la imagen y el nivel de desenfoque.
 function camMeta() {
+  const afterRecord = !!(state.finalBackground && state.nativeCamera && state.blur && !state.rawRecord && state.rawCam && (state.bgPath || state.blurLevel > 0))
   return {
-    raw: !!(state.rawRecord && state.rawCam && state.camStream !== state.rawCam),
+    afterRecord,
+    ...(afterRecord && state.crop ? { crop: { ...state.cropRect } } : {}),
+    raw: afterRecord || !!(state.rawRecord && state.rawCam && state.camStream !== state.rawCam),
     blur: !!state.blur,
     blur_level: state.blurLevel,
     background: state.bgPath || '',
@@ -967,9 +1047,9 @@ async function saveClip(durationMs) {
     if (rec.clip) { try { await window.studio.clipAbort(rec.clip.clipDir) } catch { /* ignore */ } }
     const screenBlob = new Blob(state.chunks.screen, { type: 'video/webm' })
     const camBlob = new Blob(state.chunks.webcam, { type: 'video/webm' })
-    summary = await window.studio.appendClip({ dir: rec.projectDir, screenBuf: await screenBlob.arrayBuffer(), webcamBuf: await camBlob.arrayBuffer(), durationMs, offsetMs, dims, cam: rec.cam })
+    summary = await window.studio.appendClip({ dir: rec.projectDir, screenBuf: await screenBlob.arrayBuffer(), webcamBuf: await camBlob.arrayBuffer(), durationMs, offsetMs, dims, cam: rec.cam, seed: rec.cameraSeed })
   }
-  rec.clip = null
+  rec.clip = null; rec.cameraSeed = null
   state.chunks = { screen: [], webcam: [] }
   const idx = state.projects.findIndex((p) => p.dir === summary.dir)
   if (idx >= 0) state.projects[idx] = summary; else state.projects.unshift(summary)
@@ -980,7 +1060,7 @@ async function saveClip(durationMs) {
     renderRecClips()
   }
   const secs = (durationMs / 1000).toFixed(1)
-  el('doneMsg').textContent = `✓ Clip ${summary.clipCount} guardado (${secs}s)`
+  el('doneMsg').textContent = `✓ Clip ${summary.clipCount} guardado (${secs}s)` + (rec.cam?.afterRecord ? ' · Preparando fondo…' : '')
   el('recHint').textContent = `Listo. Tienes ${summary.clipCount} clip${summary.clipCount > 1 ? 's' : ''}.`
   log(`✓ ${summary.clipCount}º clip guardado (${secs}s)` + (rec.errors.length ? ` — con avisos: ${rec.errors.join('; ')}` : ''), rec.errors.length ? 'warn' : 'ok')
   toast(`✓ Clip ${summary.clipCount} guardado en ${rec.projectName} (${secs}s)` + (rec.errors.length ? ' — revisa los avisos' : ''), rec.errors.length ? 'warn' : 'ok')
@@ -998,6 +1078,7 @@ async function discardTake(restart) {
   await drainChunks()
   if (rec.clip) { try { await window.studio.clipAbort(rec.clip.clipDir) } catch { /* ignore */ } rec.clip = null }
   state.recording = false; state.paused = false; state.discarding = false; state.recordingBusy = false
+  resumeRecordingPreview()
   renderSources()
   state.chunks = { screen: [], webcam: [] }
   log('toma descartada (no guardada)', 'err')

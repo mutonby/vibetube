@@ -5,7 +5,7 @@ const { app, BrowserWindow, ipcMain } = require('electron')
 const fs = require('fs'), path = require('path'), os = require('os'), { pathToFileURL } = require('url')
 require('../../electron/matting').install(ipcMain, app)
 const root = path.resolve(__dirname, '../..'), source = process.argv[2], output = process.argv[3]
-if (!source || !output) throw Error('Usage: electron test/manual/camera-replay.cjs input.webm output-directory [blur]')
+if (!source || !output) throw Error('Usage: electron test/manual/camera-replay.cjs input.webm output-directory [blur] [points] [--1080]')
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-livekit-check-'))
 app.setPath('userData', temp)
 app.commandLine.appendSwitch('allow-file-access-from-files')
@@ -26,14 +26,16 @@ app.whenReady().then(async () => {
   const page = path.join(temp, 'check.html')
   fs.writeFileSync(page, `${csp}<meta charset="utf-8"><base href="${pathToFileURL(root + '/src/').href}"><script src="vendor/livekit/livekit.js"></script><script src="livekit-campipe.js"></script><script src="matanyone-campipe.js"></script><script src="campipe.js"></script><script src="camcrop.js"></script><script src="float-preview.js"></script>`)
   await win.loadFile(page)
+  const recording = fs.readFileSync(path.join(root, 'src/recording.js'), 'utf8')
+  await win.webContents.executeJavaScript(recording.match(/function cameraVideoBitrate\([^]*?\n}/)[0] + '\nvoid 0')
   await floating.loadFile(path.join(root, 'src/float.html'))
-  const config = { source: pathToFileURL(path.resolve(source)).href, background: process.argv[4] === 'blur' ? null : pathToFileURL(path.join(root, 'src/backgrounds/mi-estudio.jpg')).href, points: process.argv[5] ? JSON.parse(process.argv[5]) : null }
+  const config = { source: pathToFileURL(path.resolve(source)).href, background: process.argv[4] === 'blur' ? null : pathToFileURL(path.join(root, 'src/backgrounds/mi-estudio.jpg')).href, fullHD: process.argv.includes('--1080'), points: process.argv[5] && process.argv[5] !== '--1080' ? JSON.parse(process.argv[5]) : null }
   const result = await win.webContents.executeJavaScript(`(${run.toString()})(${JSON.stringify(config)})`)
   result.previews = previews
   result.externalRequests = externalRequests
   result.previewDrawn = await floating.webContents.executeJavaScript(`document.getElementById('self').getContext('2d').getImageData(0,0,1,1).data[3]===255`)
   fs.mkdirSync(output, { recursive: true })
-  fs.writeFileSync(path.join(output, 'processed.webm'), Buffer.from(result.video.split(',')[1], 'base64'))
+  fs.writeFileSync(path.join(output, 'processed.webm'), Buffer.from(result.video.split(';base64,')[1], 'base64'))
   delete result.video
   fs.writeFileSync(path.join(output, 'stats.json'), JSON.stringify(result, null, 2))
   console.log(JSON.stringify(result, null, 2))
@@ -45,11 +47,10 @@ app.whenReady().then(async () => {
 async function run(config) {
   const input = document.createElement('video'); input.muted = true; input.loop = true; input.src = config.source
   document.body.appendChild(input); await input.play()
-  input.pause()
-  const sourceCanvas = document.createElement('canvas'); sourceCanvas.width = input.videoWidth; sourceCanvas.height = input.videoHeight
-  const sourceContext = sourceCanvas.getContext('2d'); sourceContext.drawImage(input, 0, 0)
-  const raw = sourceCanvas.captureStream(0), original = raw.getVideoTracks()[0]
-  const pump = setInterval(() => { sourceContext.drawImage(input, 0, 0); original.requestFrame() }, 33)
+  const sourceCanvas = document.createElement('canvas'); sourceCanvas.width = config.fullHD ? 1920 : input.videoWidth; sourceCanvas.height = config.fullHD ? 1080 : input.videoHeight
+  const sourceContext = sourceCanvas.getContext('2d'); sourceContext.drawImage(input, 0, 0, sourceCanvas.width, sourceCanvas.height)
+  const raw = config.fullHD ? sourceCanvas.captureStream(0) : input.captureStream(), original = raw.getVideoTracks()[0]
+  const pump = config.fullHD ? setInterval(() => { sourceContext.drawImage(input, 0, 0, sourceCanvas.width, sourceCanvas.height); original.requestFrame() }, 33) : null
   window.addEventListener('camera-effect-error', event => { throw Error(event.detail) })
   const camera = new CamPipe()
   const stream = await camera.start(raw, { blur: true, blurAmount: config.background ? 0 : 0.35, background: config.background,
@@ -58,7 +59,7 @@ async function run(config) {
   window.installFloatPreview(window.studio, () => ({ source: camera.previewSource, rect: { x: .1, y: .1, w: .8, h: .8 } }))
   const view = document.createElement('video'); view.muted = true; view.srcObject = stream; document.body.appendChild(view); await view.play()
   input.loop = false; input.currentTime = 0; await input.play()
-  const chunks = [], recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8', videoBitsPerSecond: 6000000 })
+  const chunks = [], recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: cameraVideoBitrate(sourceCanvas.width, sourceCanvas.height) })
   recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data) }
   const start = performance.now(), frames = camera.stats.frames
   recorder.start(250)
@@ -67,7 +68,7 @@ async function run(config) {
   await new Promise(resolve => { recorder.onstop = resolve; recorder.stop() })
   const elapsedMs = performance.now() - start
   const video = await new Promise(resolve => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.readAsDataURL(new Blob(chunks, { type: recorder.mimeType })) })
-  const result = { video, engine: camera.engine, frames: camera.stats.frames - frames, elapsedMs, fps: (camera.stats.frames - frames) * 1000 / elapsedMs, meanSegmentationMs: camera.stats.segmentationMs / camera.stats.frames }
+  const result = { video, inputFormat: camera.stats.inputFormat, source: { width: input.videoWidth, height: input.videoHeight }, output: { width: view.videoWidth, height: view.videoHeight }, engine: camera.engine, frames: camera.stats.frames - frames, elapsedMs, fps: (camera.stats.frames - frames) * 1000 / elapsedMs, meanSegmentationMs: camera.stats.segmentationMs / camera.stats.frames }
   const originalState = original.readyState
   await camera.stop()
   if (original.readyState !== originalState) throw Error('Stopping the effect stopped the source camera')

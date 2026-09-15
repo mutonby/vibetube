@@ -57,10 +57,13 @@ class MatAnyoneCamPipe {
     const receivedAt = performance.now()
     const scale = Math.min(1, 1920 / first.displayWidth, 1080 / first.displayHeight)
     this.width = Math.round(first.displayWidth * scale); this.height = Math.round(first.displayHeight * scale)
-    this.frame = this.canvas(this.width, this.height, true)
+    this.frame = this.canvas(this.width, this.height)
     this.foreground = this.canvas(this.width, this.height)
     this.outputCanvas = this.canvas(this.width, this.height)
-    this.mask = this.canvas(288, 512); this.maskPixels = this.mask.ctx.createImageData(288, 512)
+    // Native edge-aware alpha uses a 960×540 guide; RGB remains full resolution.
+    const maskScale = Math.min(1, 960 / this.width, 540 / this.height)
+    this.mask = this.canvas(Math.max(1, Math.round(this.width * maskScale)), Math.max(1, Math.round(this.height * maskScale)))
+    this.maskPixels = this.mask.ctx.createImageData(this.mask.width, this.mask.height)
     this.maskPixels.data.fill(255)
     await this.setBackground(background)
     if (this.stopped) return stream
@@ -90,6 +93,7 @@ class MatAnyoneCamPipe {
         const { value: frame, done } = await this.reader.read()
         if (done) break
         if (this.stopped) { frame.close(); break }
+        if (this.paused) { frame.close(); continue }
         const input = { frame, receivedAt: performance.now() }
         if (this.busy) {
           this.latest?.frame.close()
@@ -123,11 +127,14 @@ class MatAnyoneCamPipe {
       if (this.effectEnabled) {
         // Keep the same Core Image preprocessing on every frame as the approved
         // offline runner. Browser resizing changes the recurrent model's input.
-        const input = this.frame
-        const rgba = input.ctx.getImageData(0, 0, input.width, input.height).data
-        const reply = await this.connection.frame({ width: input.width, height: input.height, rgba: new Uint8Array(rgba.buffer) })
+        const input = await this.cameraPixels(frame)
+        this.stats.inputFormat = input.format
+        const reply = await this.connection.frame(input)
         if (this.stopped) return
-        if (reply.alpha.length !== 288 * 512) throw Error('MatAnyone2 devolvió una máscara incompleta')
+        if (reply.width !== this.mask.width || reply.height !== this.mask.height || reply.alpha.length !== this.mask.width * this.mask.height) {
+          throw Error('MatAnyone2 devolvió una máscara de tamaño incorrecto')
+        }
+        this.seeded = reply.seeded
         if (reply.selectionLost && !this.selectionLost) {
           this.selectionLost = true
           window.dispatchEvent(new CustomEvent('camera-selection-lost'))
@@ -152,6 +159,33 @@ class MatAnyoneCamPipe {
         this.stats.latencyMs = this.stats.latencyMs == null ? latency : this.stats.latencyMs * .9 + latency * .1
       }
     } finally { frame.close() }
+  }
+  resumeAfterRecording() { this.paused = false }
+  async recordingSeed() {
+    this.paused = true
+    this.latest?.frame.close(); this.latest = null
+    await this.processing
+    if (!this.seeded || this.stopped) return null
+    // Pause before reading: RGB and alpha must belong to the same finished frame.
+    const small = this.canvas(288, 512, true)
+    small.ctx.drawImage(this.mask, 0, 0, 288, 512)
+    const mask = small.ctx.getImageData(0, 0, 288, 512).data, alpha = new Uint8Array(288 * 512)
+    for (let i = 0; i < alpha.length; i++) alpha[i] = mask[i * 4 + 3]
+    const rgba = this.frame.ctx.getImageData(0, 0, this.width, this.height).data
+    return { width: this.width, height: this.height, pixels: new Uint8Array(rgba.buffer), alpha }
+  }
+  async cameraPixels(frame) {
+    const { width, height } = this, colorSpace = frame.colorSpace.toJSON()
+    const rect = frame.visibleRect
+    if (!this.calibration && frame.format === 'NV12' && width % 2 === 0 && height % 2 === 0 &&
+        rect.width === width && rect.height === height && ['bt709', 'smpte170m', 'bt470bg'].includes(colorSpace.matrix)) {
+      const pixels = new Uint8Array(width * height * 1.5)
+      await frame.copyTo(pixels, { layout: [{ offset: 0, stride: width }, { offset: width * height, stride: width }] })
+      return { width, height, pixels, format: 'NV12', colorSpace }
+    }
+    // Calibration uses its frozen canvas; it must seed from those exact pixels.
+    const rgba = this.frame.ctx.getImageData(0, 0, width, height).data
+    return { width, height, pixels: new Uint8Array(rgba.buffer), format: 'RGBA' }
   }
   composite() {
     const { width: w, height: h } = this, fg = this.foreground.ctx, out = this.outputCanvas.ctx

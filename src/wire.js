@@ -108,6 +108,13 @@ window.studio.onRemoteControl((which) => {
   else if (which === 'stop') stopRecording(false) // save clip, keep floating
   else if (which === 'restart') discardTake(true)
 })
+window.studio.onCameraFinalized(onCameraFinalized)
+on('finalBackgroundToggle', 'change', async () => {
+  if (state.recording || state.recordingBusy) { el('finalBackgroundToggle').checked = state.finalBackground; return }
+  state.finalBackground = el('finalBackgroundToggle').checked
+  persist({ finalBackground: state.finalBackground }); syncBlurUi()
+  if (!state.finalBackground && state.blur && !state.pipe && state.rawCam?.active) await recalibrateBackground()
+})
 window.studio.onClipValidated(onClipValidated)
 if (window.studio.onClipEnhancing) window.studio.onClipEnhancing(onClipEnhancing)
 if (window.studio.onClipEnhanced) window.studio.onClipEnhanced(onClipEnhanced)

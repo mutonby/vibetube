@@ -29,6 +29,9 @@ contextBridge.exposeInMainWorld('studio', {
   // grabación por chunks (a disco según llegan) + recuperación de tomas a medias
   clipBegin: (dir) => ipcRenderer.invoke('clip-begin', { dir }),
   clipChunk: (clipDir, track, data) => ipcRenderer.invoke('clip-chunk', { clipDir, track, data }),
+  retryCameraFinalization: (payload) => ipcRenderer.invoke('camera-finalize-retry', payload),
+  onCameraFinalized: (cb) => ipcRenderer.on('camera-finalized', (_e, payload) => cb(payload)),
+  clipCameraSeed: (payload) => ipcRenderer.invoke('clip-camera-seed', payload),
   clipFinish: (payload) => ipcRenderer.invoke('clip-finish', payload),
   clipAbort: (clipDir) => ipcRenderer.invoke('clip-abort', { clipDir }),
   clipRecover: (dir, clipId) => ipcRenderer.invoke('clip-recover', { dir, clipId }),

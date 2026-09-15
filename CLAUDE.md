@@ -31,6 +31,9 @@ Lee también `README.md` (uso) y `HANDOFF.md` (contrato del EDL multicam entre g
   rewrite/hooks de guiones). Funciones puras, testeadas.
 - `electron/media-protocol.js` — `rsmedia://` con Range, restringido a raíces permitidas.
 - `electron/settings.js` — ajustes durables en `userData/settings.json`.
+- `electron/awake.js` — impide que el Mac apague la pantalla o se bloquee por inactividad
+  mientras hay una sesión de grabación (`prevent-display-sleep`, se suelta al terminar o si la
+  ventana se va).
 - `electron/util.js` — helpers puros (stamp, slugify, parseRange, isUnder, writeJson atómico…).
 - `electron/preload.js` — puente `contextBridge` (`window.studio.*`).
 - `electron/{float,tp}-preload.js` — overlays flotantes (cámara flotante / teleprompter).
@@ -111,10 +114,18 @@ selecciona el motor; `matanyone-campipe.js` transporta y compone fotogramas.
 No añadir filtros de pelo, silla o máscaras por color. Mantener imagen y alpha
 del mismo fotograma y una sola inferencia pendiente.
 
-Se graba por defecto la misma cámara procesada que muestra la previsualización.
-«Guardar cámara original» (`state.rawRecord`) es una opción del usuario, no un
-requisito. Si se activa, se conserva el original y el fondo elegido se anota en
-`clips[].cam` para aplicarlo después con el helper offline.
+Desde el 14/09/2026, `state.finalBackground` está activado por defecto en Apple
+Silicon: captura original y procesado automático posterior mediante
+`electron/camera-finalizer.js`. Pausar el modelo de previsualización durante
+la toma y reanudarlo al parar para conservar la calibración entre clips. Mantener el original `camera-original.webm`, la calibración emparejada
+`camera-seed.*` y el fondo elegido `camera-background.*`. El nativo usa `--fps 30`
+para que el reloj de seguimiento sea el del vídeo. La cola valida fotogramas,
+dimensiones y hash de audio antes de sustituir `webcam.webm`; no cambiar el offset.
+La mejora de voz y el montaje deben esperar a que `camera_processing` esté `done`.
+El usuario puede desactivar «Fondo al terminar» para grabar el efecto en directo.
+«Guardar cámara original» (`state.rawRecord`) conserva el modo manual sin procesado
+automático. El helper RVM descrito a continuación es una utilidad manual antigua,
+no el motor del procesado automático actual.
 
 `_scripts/rematte_cam.py` usa **RobustVideoMatting** (recurrente → coherencia temporal de serie;
 medido: 22-44 fps en un M1 Pro, 0,28% de variación de área entre fotogramas). Dos modos:
@@ -136,6 +147,12 @@ de cada salida y se niega a tocar `project.json` (`--apply`) si algún clip no p
 
 ## Grabación y blur de fondo (`src/campipe.js`, `src/renderer.js`)
 
+- La cámara usa `pickCameraMime`: H.264 + Opus, después VP8/VP9 según soporte.
+  VP9 en directo perdió muchos fotogramas con imagen USB real a 1080p, aunque
+  pasaban las pruebas sintéticas. Chromium genera Matroska para H.264 + Opus;
+  se mantienen las rutas `.webm` y se detecta el contenido por su cabecera.
+  La pantalla y el procesado final conservan VP9. Medir siempre los fotogramas
+  del original: un archivo CFR a 30 FPS puede contener imágenes repetidas.
 - **Blur de fondo**: MatAnyone2 conserva la memoria temporal; composición en canvas
   con el alpha del modelo. No hay una EMA manual ni filtros de contorno propios.
 - **Slider de intensidad**: `#blurLevel` (0-100), persistido en `localStorage rs_blurlevel`,

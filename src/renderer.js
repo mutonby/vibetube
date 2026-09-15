@@ -55,6 +55,7 @@ async function loadSettings() {
   if (s.mic) state.micId = s.mic
   if (typeof s.blur === 'boolean') state.blur = s.blur
   if (typeof s.rawrecord === 'boolean') state.rawRecord = s.rawrecord
+  if (typeof s.finalBackground === 'boolean') state.finalBackground = s.finalBackground
   if (typeof s.blurlevel === 'number') state.blurLevel = s.blurlevel
   if (typeof s.bgpath === 'string') state.bgPath = s.bgpath
   if (typeof s.crop === 'boolean') state.crop = s.crop
@@ -83,9 +84,11 @@ const state = {
   micId: localStorage.getItem('rs_mic') || '',
   blur: localStorage.getItem('rs_blur') === '1',
   blurLevel: Math.max(0, Math.min(100, parseInt(localStorage.getItem('rs_blurlevel') ?? '50', 10) || 50)),
-  // Default: record the same processed camera shown in the preview. Saving the
-  // original camera for offline matting remains an explicit option.
+  // Native cameras default to automatic matting after capture. rawRecord is
+  // the separate option to leave background editing to the manual montage.
   rawRecord: localStorage.getItem('rs_rawrecord') === '1',
+  finalBackground: localStorage.getItem('rs_finalBackground') !== 'false',
+  nativeCamera: false,
   bgPath: localStorage.getItem('rs_bgpath') || '', // virtual background image (empty = blur mode)
   bgData: null, // { path, name, dataUrl } loaded on demand from bgPath
   crop: localStorage.getItem('rs_crop') === '1', // record only a sub-rectangle of the cam
@@ -289,7 +292,9 @@ async function saveTeleprompter() {
 
 async function renderRecClips() {
   if (!state.current) return
-  const d = await window.studio.projectDetail(state.current)
+  const dir = state.current
+  const d = await window.studio.projectDetail(dir)
+  if (state.current !== dir) return
   state.detail = d
   updateClipsCta()
   const box = el('recClips'); box.innerHTML = ''
@@ -300,7 +305,7 @@ async function renderRecClips() {
     card.innerHTML = `
       <div class="rc-thumb" ${thumb}><button class="rc-play" title="reproducir">${icon('play', 'icon icon-sm')}</button><span class="dur-chip">${fmtDur(c.durationMs)}</span>${clipStatusChip(c)}</div>
       <div class="rc-row"><span>Clip ${i + 1}</span><button class="rc-del danger" title="borrar">${icon('trash', 'icon icon-sm')}</button></div>`
-    card.querySelector('.rc-play').addEventListener('click', () => openVideo(`rsmedia://media/${encodeURIComponent(c.webcamPath)}`))
+    wireCameraPlayback(card, '.rc-play', c, d.dir)
     card.querySelector('.rc-del').addEventListener('click', async () => {
       const ok = await openConfirm('Borrar clip', `¿Borrar el Clip ${i + 1}? Se moverá a la papelera.`, { danger: true })
       if (!ok) return
@@ -441,7 +446,7 @@ function renderDetail(d) {
             <button data-a="del" class="danger" title="borrar">${icon('trash', 'icon icon-sm')}</button>
           </span>
         </div>`
-      card.querySelector('.clip-play').addEventListener('click', () => openVideo(`rsmedia://media/${encodeURIComponent(c.webcamPath)}`))
+      wireCameraPlayback(card, '.clip-play', c, d.dir)
       card.querySelector('[data-a="enhance"]').addEventListener('click', async () => {
         toast(`Mejorando audio de ${c.id} con NVIDIA Studio Voice…`)
         card.querySelectorAll('.status-chip.st-check').forEach((n) => n.remove())
@@ -468,20 +473,58 @@ const CLIP_STATUS = {
   checking: ['comprobando…', 'st-check'], truncated: ['⚠ truncado', 'st-bad'], empty: ['✗ vacío', 'st-bad'], warning: ['⚠ avisos', 'st-warn'],
 }
 function clipStatusChip(c) {
+  const camera = c.cameraProcessing
+  if (camera && camera.status !== 'done') {
+    const label = camera.status === 'failed' ? 'Fondo pendiente · Reintentar' : camera.status === 'queued' ? 'Fondo en cola…' : `Preparando fondo… ${Math.min(99, Math.round((camera.frames || 0) / Math.max(1, c.durationMs * .03) * 100))}%`
+    return `<span class="status-chip ${camera.status === 'failed' ? 'st-warn' : 'st-check'}" title="${escapeHtml(camera.error || 'El original está guardado. Puedes seguir grabando.')}">${label}</span>`
+  }
   if (c.enhancing) return `<span class="status-chip st-check" title="Mejorando audio con NVIDIA Studio Voice NIM">✨ mejorando voz…</span>`
   const s = CLIP_STATUS[c.status]
   const base = s ? `<span class="status-chip ${s[1]}" title="${escapeHtml(c.statusNote || '')}">${s[0]}</span>` : ''
   const enh = c.enhanced ? `<span class="status-chip st-ok" title="Audio de estudio (NVIDIA Studio Voice NIM)">✨ Studio Voice</span>` : ''
   return enh + base
 }
+function wireCameraPlayback(card, selector, clip, dir) {
+  const button = card.querySelector(selector)
+  button.disabled = !!clip.cameraProcessing && clip.cameraProcessing.status !== 'done'
+  button.addEventListener('click', () => openVideo(`rsmedia://media/${encodeURIComponent(clip.webcamPath)}`))
+  const retry = document.createElement('button'); retry.className = 'btn-tertiary camera-retry'; retry.textContent = 'Reintentar fondo'
+  retry.hidden = clip.cameraProcessing?.status !== 'failed'
+  retry.addEventListener('click', async () => {
+    retry.disabled = true
+    try { await window.studio.retryCameraFinalization({ dir, clipId: clip.id }); retry.hidden = true }
+    catch (e) { toast(e.message, 'err') }
+    finally { retry.disabled = false }
+  })
+  card.appendChild(retry)
+}
+async function onCameraFinalized(payload) {
+  if (state.current !== payload.dir) return
+  const clip = state.detail?.clips?.find(c => c.id === payload.clipId)
+  if (clip) clip.cameraProcessing = payload
+  for (const card of document.querySelectorAll(`[data-clip="${payload.clipId}"]`)) {
+    card.querySelectorAll('.status-chip').forEach(node => node.remove())
+    card.querySelector('.clip-thumb, .rc-thumb')?.insertAdjacentHTML('beforeend', clipStatusChip(clip || { cameraProcessing: payload }))
+    const play = card.querySelector('.clip-play, .rc-play'); if (play) play.disabled = payload.status !== 'done'
+    const retry = card.querySelector('.camera-retry'); if (retry) retry.hidden = payload.status !== 'failed'
+  }
+  if (payload.status === 'done') {
+    toast(`✓ Fondo listo: ${payload.clipId}`)
+    const dir = state.current, detail = await window.studio.projectDetail(dir)
+    if (state.current !== dir) return
+    const fresh = detail.clips.find(c => c.id === payload.clipId)
+    if (fresh?.thumbDataUrl) document.querySelectorAll(`[data-clip="${payload.clipId}"] .clip-thumb, [data-clip="${payload.clipId}"] .rc-thumb`).forEach(node => { node.style.backgroundImage = `url('${fresh.thumbDataUrl}')` })
+  }
+}
 // Actualiza el chip de un clip cuando main termina de validarlo.
 function onClipValidated({ dir, clipId, status, note }) {
+  if (state.current !== dir) return
   if (state.detail && state.detail.dir === dir && state.detail.clips) {
     const c = state.detail.clips.find((x) => x.id === clipId)
     if (c) { c.status = status; c.statusNote = note }
   }
   document.querySelectorAll(`[data-clip="${clipId}"] .status-chip:not(.st-ok)`).forEach((n) => n.remove())
-  document.querySelectorAll(`[data-clip="${clipId}"] .clip-thumb, [data-clip="${clipId}"] .rc-thumb`).forEach((n) => { n.insertAdjacentHTML('beforeend', clipStatusChip({ status, statusNote: note })) })
+  document.querySelectorAll(`[data-clip="${clipId}"] .clip-thumb, [data-clip="${clipId}"] .rc-thumb`).forEach((n) => { n.insertAdjacentHTML('beforeend', clipStatusChip(state.detail?.clips?.find(c => c.id === clipId) || { status, statusNote: note })) })
   if (status === 'truncated' || status === 'empty') toast(`⚠ ${clipId}: ${note}`, 'err', 8000)
   else if (status === 'warning') toast(`⚠ ${clipId}: ${note}`, 'warn', 6000)
 }
