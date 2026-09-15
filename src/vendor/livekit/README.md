@@ -1,6 +1,6 @@
 # Camera effects: unmodified LiveKit
 
-Record Studio uses `@livekit/track-processors` **0.8.0**, with its default
+VibeTube uses `@livekit/track-processors` **0.8.0**, with its default
 MediaPipe Tasks Vision **0.10.14** runtime and binary selfie segmenter.
 LiveKit owns the model, shaders, antialiasing, blur and frame scheduling. There
 are no application-specific hair/chair classifiers or mask refinements.

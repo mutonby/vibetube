@@ -64,7 +64,7 @@ function createWindow() {
     minWidth: 1000,
     minHeight: 700,
     backgroundColor: '#0a0a0f',
-    title: 'Record Studio',
+    title: 'VibeTube',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

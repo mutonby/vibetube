@@ -1,7 +1,7 @@
 'use strict'
 
 // ----------------------------------------------------------------------------
-// Record Studio — renderer (Home → Detail → Record)
+// VibeTube — renderer (Home → Detail → Record)
 // ----------------------------------------------------------------------------
 
 const el = (id) => document.getElementById(id)

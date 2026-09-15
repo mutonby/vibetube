@@ -1,4 +1,4 @@
-# Record Studio
+# VibeTube
 
 Desktop **multicam recorder** (macOS / Electron). It captures your **screen** and your
 **webcam + microphone** in sync, organises them into **projects made of several clips**, and
@@ -19,7 +19,7 @@ You record. The agent edits.
 flowchart LR
     S["🖥️ Screen<br/>(no audio)"] --> R
     W["🎥 Webcam + 🎙️ mic<br/>(the only audio)"] --> R
-    R["<b>Record Studio</b><br/>N synced clips"] --> P[("Project folder<br/>clips/ + sync.json")]
+    R["<b>VibeTube</b><br/>N synced clips"] --> P[("Project folder<br/>clips/ + sync.json")]
     P --> A{"<b>Agent</b><br/>Claude Code<br/>or Codex"}
     A --> V["<b>video-use</b> skill<br/>transcribe → pick shots → cut"]
     V --> G["HyperFrames graphics<br/>+ HeyGen SFX + subtitles"]
@@ -101,6 +101,11 @@ bundled with this app.
 
 ### Record tab
 
+![Record view: source picker, screen preview and camera with the background replaced](docs/screenshots/recording.png)
+
+*Recording the app itself: the screen preview on the left is the VibeTube window, and the camera on
+the right already shows the replaced background.*
+
 1. **Pick** the screen or window. Sources are grouped by type and labelled; the selected one is
    highlighted. **Refresh** reloads the list and its thumbnails.
 2. Check the screen and webcam **previews**.
@@ -114,7 +119,7 @@ bundled with this app.
 Turn on **Mantener interfaz visible al grabar** ("keep the interface visible while recording"), next
 to the Record button. The setting persists: the main window stays open and capturable, and the small
 floating controls appear as usual. Turned off, the main window hides during the take. Select the
-screen, or the Record Studio window itself, to include the interface in the video.
+screen, or the VibeTube window itself, to include the interface in the video.
 
 You can leave the project and open **Projects**, **Scripts** or another project without interrupting
 the take. The recorder keeps writing to the project where the session started, no matter which
@@ -170,7 +175,7 @@ Continuous audio always comes from `webcam.webm`; only the video shot changes. T
 
 ## AI voice enhancement (NVIDIA Studio Voice NIM)
 
-Record Studio integrates **NVIDIA Studio Voice NIM (`48k-hq`)** over gRPC to turn microphone audio
+VibeTube integrates **NVIDIA Studio Voice NIM (`48k-hq`)** over gRPC to turn microphone audio
 into studio-grade voice: it suppresses room echo, background noise, keyboards and air conditioning,
 improving presence and clarity at 48 kHz.
 
@@ -362,7 +367,7 @@ To verify the UI without hands, launch Electron with a debugging port and drive 
 
 ## Licence
 
-Record Studio is released under the **MIT** licence (see [LICENSE](LICENSE)).
+VibeTube is released under the **MIT** licence (see [LICENSE](LICENSE)).
 
 Third-party components included in this repository keep **their own licences**:
 
