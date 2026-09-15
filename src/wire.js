@@ -22,7 +22,7 @@ el('recordScriptBtn').addEventListener('click', recordWithScript)
 el('cancelScriptBtn').addEventListener('click', async () => { for (const k of SCRIPT_KEYS) await window.studio.agentCancel(k) })
 el('toggleScriptLog').addEventListener('click', () => {
   const hidden = el('scriptLog').classList.toggle('hidden')
-  el('toggleScriptLog').textContent = hidden ? '▸ Ver progreso' : '▾ Ocultar progreso'
+  el('toggleScriptLog').textContent = hidden ? '▸ Show progress' : '▾ Ocultar progreso'
 })
 el('createProj').addEventListener('click', createProject)
 el('newName').addEventListener('keydown', (e) => { if (e.key === 'Enter') createProject() })
@@ -141,20 +141,20 @@ document.addEventListener('keydown', (e) => {
 
 // Cerrar/recargar la ventana en mitad de una toma pierde el clip: avisar.
 window.addEventListener('beforeunload', (e) => {
-  if (state.recording) { e.preventDefault(); e.returnValue = 'Hay una grabación en curso.' }
+  if (state.recording) { e.preventDefault(); e.returnValue = 'A recording is in progress.' }
 })
 
 window.studio.onTpClosed(() => { state.tpVisible = false; updateTpToggle() })
 window.studio.onTpSaved(async ({ text, path }) => {
   el('tpText').value = text
   if (state.current) { await window.studio.setTeleprompter(state.current, text); if (state.detail) state.detail.teleprompter = text }
-  if (path) await window.studio.saveScript(path, text) // auto-save back to the loaded guion file
+  if (path) await window.studio.saveScript(path, text) // auto-save back to the loaded script file
 })
 window.studio.onTpLoaded(async ({ path, text }) => {
   state.tpLoadedPath = path || ''
   el('tpText').value = text || ''
   if (state.current) { await window.studio.setTeleprompter(state.current, text || ''); if (state.detail) state.detail.teleprompter = text || '' }
-  log('guion cargado en el teleprompter', 'ok')
+  log('script loaded into the teleprompter', 'ok')
 })
 
 window.addEventListener('DOMContentLoaded', async () => {

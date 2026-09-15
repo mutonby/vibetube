@@ -13,7 +13,7 @@ let currentPath = '' // loaded script file, '' = none (saves only to project pro
 let saveTimer = null
 
 function setScripts(scripts, selected) {
-  loadSel.innerHTML = '<option value="">— guion —</option>'
+  loadSel.innerHTML = '<option value="">— script —</option>'
   for (const s of scripts || []) {
     const o = document.createElement('option')
     o.value = s.path

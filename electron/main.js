@@ -21,7 +21,7 @@ const { DEFAULT_OPTS, normAspect } = prompts
 // to opening the system Terminal instead of breaking.
 let pty = null
 try { pty = require('node-pty-prebuilt-multiarch') }
-catch (e) { console.error('[pty] node-pty no cargó, la terminal usará Terminal.app:', e.message) }
+catch (e) { console.error('[pty] node-pty failed to load, the terminal will use Terminal.app:', e.message) }
 
 // Allow the file:// renderer to load the bundled camera model and WASM locally.
 app.commandLine.appendSwitch('allow-file-access-from-files')
@@ -52,7 +52,7 @@ function guardPath(p, what = 'ruta') {
   return p
 }
 function guardRoot(root) {
-  if (typeof root !== 'string' || !root) throw new Error('carpeta raíz inválida')
+  if (typeof root !== 'string' || !root) throw new Error('invalid root folder')
   if (!allowedRoots().includes(root)) registerRoot(root) // elegida con el diálogo → válida
   return root
 }
@@ -97,7 +97,7 @@ function createWindow() {
     if (!recordingActive) return
     const r = dialog.showMessageBoxSync(mainWindow, {
       type: 'warning', buttons: ['Seguir grabando', 'Descartar y cerrar'], defaultId: 0, cancelId: 0,
-      message: 'Hay una grabación en curso', detail: 'Si cierras ahora, la toma actual se perderá.',
+      message: 'A recording is in progress', detail: 'If you close now, the current take will be lost.',
     })
     if (r === 0) e.preventDefault()
   })
@@ -244,7 +244,7 @@ function openSystemTerminal(dir, binary, args) {
     fs.writeFileSync(f, script, { mode: 0o755 })
     shell.openPath(f)
     return true
-  } catch (e) { console.error('[terminal] fallback Terminal falló:', e.message); return false }
+  } catch (e) { console.error('[terminal] Terminal fallback failed:', e.message); return false }
 }
 
 function startTerminal({ dir, resume, opts, cols, rows } = {}) {
@@ -469,7 +469,7 @@ ipcMain.handle('list-sources', async () => {
         detail = `${Math.round(width * disp.scaleFactor)}×${Math.round(height * disp.scaleFactor)}`
       }
     } else {
-      detail = s.name.toLowerCase().includes(appName.toLowerCase()) ? 'Esta app · efecto espejo' : 'Solo esta ventana'
+      detail = s.name.toLowerCase().includes(appName.toLowerCase()) ? 'This app · mirror effect' : 'This window only'
     }
     return {
       id: s.id,
@@ -488,7 +488,7 @@ ipcMain.handle('list-sources', async () => {
 
 ipcMain.handle('choose-dir', async (_e, title) => {
   const res = await dialog.showOpenDialog(mainWindow, {
-    title: title || 'Elegir carpeta',
+    title: title || 'Choose folder',
     properties: ['openDirectory', 'createDirectory'],
   })
   if (res.canceled || !res.filePaths[0]) return null
@@ -602,13 +602,13 @@ function resumeCameraJobs(dir, project) {
 }
 function requireFinishedCameras(dir) {
   if (readProjectJson(dir)?.clips?.some(c => c.cam?.afterRecord && c.camera_processing?.status !== 'done')) {
-    throw Error('Espera a que termine el fondo de los clips. Si alguno falló, pulsa Reintentar fondo.')
+    throw Error('Wait for the clip backgrounds to finish. If any failed, hit Retry background.')
   }
 }
 ipcMain.handle('camera-finalize-retry', async (_event, { dir, clipId }) => {
   guardPath(dir)
   const project = readProjectJson(dir), clip = project?.clips?.find(c => c.id === clipId)
-  if (!clip?.cam?.afterRecord || clip.camera_processing?.status !== 'failed') throw Error('Este clip no tiene un fondo pendiente de reintentar')
+  if (!clip?.cam?.afterRecord || clip.camera_processing?.status !== 'failed') throw Error('This clip has no pending background to retry')
   clip.camera_processing = { status: 'queued' }; writeProjectJson(dir, project)
   cameraFinalizer.enqueue(dir, clipId)
   return { ok: true }
@@ -641,7 +641,7 @@ ipcMain.handle('clip-begin', async (_e, { dir }) => {
 
 function saveCameraSeed(clipDir, { width, height, pixels, alpha }) {
   if ( !Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > 1920 || height > 1080 ||
-      !(pixels instanceof Uint8Array) || pixels.length !== width * height * 4 || !(alpha instanceof Uint8Array) || alpha.length !== 288 * 512) throw Error('Calibración de cámara inválida')
+      !(pixels instanceof Uint8Array) || pixels.length !== width * height * 4 || !(alpha instanceof Uint8Array) || alpha.length !== 288 * 512) throw Error('Invalid camera calibration')
   fs.writeFileSync(path.join(clipDir, 'camera-seed.rgba'), pixels)
   fs.writeFileSync(path.join(clipDir, 'camera-seed.alpha'), alpha)
   writeJson(path.join(clipDir, 'camera-seed.json'), { width, height })
@@ -695,8 +695,8 @@ function finalizeClip(dir, clipId, meta) {
   try {
   if (meta.cam?.afterRecord && meta.cam.background) {
     const image = meta.cam.background
-    if (!isUnder(path.join(__dirname, '..', 'src/backgrounds'), image) && !(settings.get('bgAllowed', []) || []).includes(image)) throw Error('Fondo de cámara no autorizado')
-    if (!BG_MIME[path.extname(image).toLowerCase()]) throw Error('Formato de fondo no compatible')
+    if (!isUnder(path.join(__dirname, '..', 'src/backgrounds'), image) && !(settings.get('bgAllowed', []) || []).includes(image)) throw Error('Camera background not allowed')
+    if (!BG_MIME[path.extname(image).toLowerCase()]) throw Error('Unsupported background format')
     const saved = path.join(clipDir, 'camera-background' + path.extname(image).toLowerCase())
     fs.copyFileSync(image, saved); meta.cam = { ...meta.cam, background: saved }
   }
@@ -725,7 +725,7 @@ ipcMain.handle('clip-finish', async (_e, { clipDir, durationMs, offsetMs, dims, 
   const meta = { durationMs, offsetMs, dims, pauses, firstData, errors, cam }
   if (!oc.bytes.screen && !oc.bytes.webcam) {
     fs.rmSync(clipDir, { recursive: true, force: true })
-    throw new Error('la grabación no produjo datos (0 bytes en ambas pistas)')
+    throw new Error('the recording produced no data (0 bytes on both tracks)')
   }
   finalizeClip(oc.dir, oc.clipId, meta)
   return summarizeProject(oc.dir)
@@ -766,10 +766,10 @@ async function validateClipAsync(dir, clipId, expectedMs, errors) {
     if (probed[t] == null) { notes.push(`${label}: no se pudo medir`); continue }
     if (expectedMs && probed[t] < expectedMs - 2000) {
       if (status !== 'empty') status = 'truncated'
-      notes.push(`${label}: ${(probed[t] / 1000).toFixed(1)}s de ${(expectedMs / 1000).toFixed(1)}s esperados`)
+      notes.push(`${label}: ${(probed[t] / 1000).toFixed(1)}s of ${(expectedMs / 1000).toFixed(1)}s expected`)
     }
   }
-  if (errors && errors.length && status === 'ok') { status = 'warning'; notes.push('el grabador reportó errores: ' + errors.join('; ')) }
+  if (errors && errors.length && status === 'ok') { status = 'warning'; notes.push('the recorder reported errors: ' + errors.join('; ')) }
   const proj = readProjectJson(dir)
   if (!proj) return
   const c = (proj.clips || []).find((x) => x.id === clipId)
@@ -805,7 +805,7 @@ function voicePythonBin() {
 
 async function enhanceClipAsync(dir, clipId, force = false) {
   const camera = readProjectJson(dir)?.clips?.find(c => c.id === clipId)
-  if (camera?.cam?.afterRecord && (camera.camera_processing?.status !== 'done' || camera.status === 'checking')) return { ok: false, error: 'Espera a que termine el fondo del clip' }
+  if (camera?.cam?.afterRecord && (camera.camera_processing?.status !== 'done' || camera.status === 'checking')) return { ok: false, error: 'Wait for the clip background to finish' }
   const script = voiceEnhanceScript()
   if (!script) return { ok: false, error: 'script enhance_voice.py no encontrado' }
   const py = voicePythonBin()
@@ -864,7 +864,7 @@ async function enhanceAllClipsAsync(dir, force = false) {
   if (!py) return { ok: false, error: 'python3 no encontrado' }
   const env = { ...process.env, ...agent.serviceEnv() }
   const hasKey = !!(env.NVIDIA_API_KEY || env.NGC_API_KEY)
-  if (!hasKey) return { ok: false, error: 'No se encontró NVIDIA_API_KEY en el entorno ni en ~/.config/record-studio/.env' }
+  if (!hasKey) return { ok: false, error: 'NVIDIA_API_KEY was not found in the environment or in ~/.config/record-studio/.env' }
 
   return new Promise((resolve) => {
     const args = [script, '--all', '--dir', dir]
@@ -923,7 +923,7 @@ ipcMain.handle('clip-recover', async (_e, { dir, clipId }) => {
   const probed = {}
   for (const t of ['screen', 'webcam']) probed[t] = await probeDurationMs(path.join(clipDir, `${t}.part.webm`))
   const durationMs = Math.max(probed.screen || 0, probed.webcam || 0)
-  if (!durationMs) throw new Error('la toma no tiene vídeo legible; solo se puede descartar')
+  if (!durationMs) throw new Error('the take has no readable video; it can only be discarded')
   finalizeClip(dir, clipId, { durationMs, offsetMs: 0, dims: { screen: null, webcam: null }, pauses: [], errors: ['recuperado tras un cierre inesperado'] })
   return summarizeProject(dir)
 })
@@ -1104,7 +1104,7 @@ ipcMain.handle('analyze-channel', async (_e, { root, channel, incremental }) => 
   const inc = !!incremental && fs.existsSync(path.join(sd, 'style_profile.md'))
   return agent.runAgentJob('style', sd, prompts.analyzePrompt(channel, { incremental: inc }),
     () => (fs.existsSync(path.join(sd, 'style_profile.md')) ? { ok: true, pace: pace(root) } : null),
-    inc ? 'Actualizando tu perfil con los vídeos nuevos…' : 'Analizando tu canal con yt-dlp…', { maxTurns: 150 })
+    inc ? 'Updating your profile with the new videos…' : 'Analysing your channel with yt-dlp…', { maxTurns: 150 })
 })
 
 function scriptResult(p) {
@@ -1248,7 +1248,7 @@ function backgroundDataUrl(p) {
 
 ipcMain.handle('pick-background', async () => {
   const r = await dialog.showOpenDialog(mainWindow, {
-    title: 'Elige una imagen de fondo',
+    title: 'Choose a background image',
     properties: ['openFile'],
     filters: [{ name: 'Imágenes', extensions: ['jpg', 'jpeg', 'png', 'webp'] }],
   })

@@ -21,7 +21,7 @@ async function loadSources(attempt = 0) {
   let timer
   try {
     const sources = await Promise.race([window.studio.listSources(), new Promise((_r, reject) => {
-      timer = setTimeout(() => reject(new Error('sin respuesta en 8 s')), 8000)
+      timer = setTimeout(() => reject(new Error('no response after 8 s')), 8000)
     })])
     if (version !== sourceLoadVersion) return
     state.sources = sources
@@ -29,7 +29,7 @@ async function loadSources(attempt = 0) {
   } catch (e) {
     if (version !== sourceLoadVersion) return
     if (attempt < 1) return loadSources(attempt + 1)
-    if (!state.sources.length) el('sourcesGrid').innerHTML = '<div class="empty">No se pudieron cargar las fuentes. Revisa el permiso de Grabación de pantalla en Ajustes y pulsa Actualizar.</div>'
+    if (!state.sources.length) el('sourcesGrid').innerHTML = '<div class="empty">Could not load the sources. Check the Screen Recording permission in Settings and hit Refresh.</div>'
     log('error fuentes: ' + e.message, 'err'); toast('No se pudieron actualizar las fuentes', 'err')
   } finally {
     clearTimeout(timer)
@@ -43,7 +43,7 @@ function renderSources() {
     if (!sources.length) continue
     const heading = document.createElement('div')
     heading.className = 'source-group-title'
-    heading.textContent = `${kind === 'screen' ? 'Pantallas completas' : 'Ventanas'} · ${sources.length}`
+    heading.textContent = `${kind === 'screen' ? 'Full screens' : 'Windows'} · ${sources.length}`
     grid.appendChild(heading)
     for (const s of sources) {
       const card = document.createElement('button')
@@ -54,10 +54,10 @@ function renderSources() {
       card.disabled = state.recording
       card.setAttribute('aria-pressed', String(sel))
       card.title = s.name
-      const label = pending ? 'Abriendo…' : sel ? (state.recording ? (state.paused ? 'En pausa' : 'Grabando') : 'Seleccionada') : ''
-      card.innerHTML = `<span class="source-thumb">${icon(kind === 'screen' ? 'screen' : 'window')}<span class="source-no-preview">Sin miniatura</span></span>
+      const label = pending ? 'Opening…' : sel ? (state.recording ? (state.paused ? 'Paused' : 'Recording') : 'Selected') : ''
+      card.innerHTML = `<span class="source-thumb">${icon(kind === 'screen' ? 'screen' : 'window')}<span class="source-no-preview">No thumbnail</span></span>
         <span class="source-info"><span class="source-name">${escapeHtml(s.name)}</span>
-        <span class="source-detail">${escapeHtml(s.detail || (kind === 'screen' ? 'Todo lo que se vea en esta pantalla' : 'Solo esta ventana'))}</span>
+        <span class="source-detail">${escapeHtml(s.detail || (kind === 'screen' ? 'Everything visible on this screen' : 'This window only'))}</span>
         ${label ? `<span class="source-selection">${sel && !pending ? '● ' : ''}${label}</span>` : ''}</span>`
       if (s.thumbnail && s.thumbnail !== 'data:image/png;base64,') {
         const img = document.createElement('img'); img.alt = ''
@@ -68,16 +68,16 @@ function renderSources() {
       grid.appendChild(card)
     }
   }
-  if (!state.sources.length) grid.innerHTML = '<div class="empty">No hay fuentes disponibles. Pulsa Actualizar para volver a buscar.</div>'
+  if (!state.sources.length) grid.innerHTML = '<div class="empty">No sources available. Hit Refresh to look again.</div>'
   updateScreenCaption()
 }
 function updateScreenCaption() {
   const cap = el('screenCap')
   if (!cap) return
   const s = state.sources.find(x => x.id === state.selectedSourceId) || state.selectedSource
-  if (!s || !state.screenStream) { cap.textContent = 'Elige una pantalla o ventana a la izquierda'; return }
-  const status = state.recording ? (state.paused ? 'EN PAUSA' : 'GRABANDO') : 'VISTA PREVIA · TODAVÍA NO ESTÁS GRABANDO'
-  cap.innerHTML = `<span class="screen-source-status">${status}</span><strong>${escapeHtml(s.name)}</strong><span class="screen-source-scope">${s.kind === 'screen' ? 'Se grabará toda esta pantalla, incluidas las ventanas que abras en ella.' : 'Se grabará esta ventana. Su contenido cambia al cambiar de pestaña.'}</span>`
+  if (!s || !state.screenStream) { cap.textContent = 'Pick a screen or window on the left'; return }
+  const status = state.recording ? (state.paused ? 'EN PAUSA' : 'GRABANDO') : 'PREVIEW · YOU ARE NOT RECORDING YET'
+  cap.innerHTML = `<span class="screen-source-status">${status}</span><strong>${escapeHtml(s.name)}</strong><span class="screen-source-scope">${s.kind === 'screen' ? 'This whole screen will be recorded, including any window you open on it.' : 'This window will be recorded. Its content changes when you switch tabs.'}</span>`
   cap.title = s.name
 }
 async function selectSource(id) {
@@ -98,11 +98,11 @@ async function selectSource(id) {
       state.screenStream = null; state.selectedSourceId = null; state.selectedSource = null
       el('screenPreview').srcObject = null
       renderSources(); updateReady()
-      toast('La fuente de pantalla se ha cerrado. Elige otra para continuar.', 'warn')
+      toast('The screen source was closed. Pick another one to continue.', 'warn')
       if (state.recording) stopRecording()
     }, { once: true })
   } catch (e) {
-    if (version === sourceSelectionVersion) { log('error pantalla: ' + e.message, 'err'); toast('No se pudo abrir esa fuente. Prueba otra o pulsa Actualizar.', 'err') }
+    if (version === sourceSelectionVersion) { log('screen error: ' + e.message, 'err'); toast('No se pudo abrir esa fuente. Prueba otra o pulsa Actualizar.', 'err') }
   } finally {
     if (version === sourceSelectionVersion) { pendingSourceId = null; renderSources(); updateReady() }
   }
@@ -113,7 +113,7 @@ async function selectSource(id) {
 async function listDevices() {
   try {
     const devices = await navigator.mediaDevices.enumerateDevices()
-    fillSelect(el('camSelect'), devices.filter((d) => d.kind === 'videoinput'), state.camId, 'Cámara')
+    fillSelect(el('camSelect'), devices.filter((d) => d.kind === 'videoinput'), state.camId, 'Camera')
     fillSelect(el('micSelect'), devices.filter((d) => d.kind === 'audioinput'), state.micId, 'Micro')
   } catch (e) { /* labels need permission, already granted */ }
 }
@@ -155,7 +155,7 @@ async function startCamPreview() {
     } catch (e1) {
       if (e1.name === 'OverconstrainedError' || e1.name === 'NotFoundError') {
         // The saved cam/mic is gone — retry with whatever default exists.
-        log('la cámara/micro guardados ya no están conectados; uso los predeterminados', 'warn')
+        log('the saved camera/mic are no longer connected; using the defaults', 'warn')
         state.camId = ''; state.micId = ''; persist({ cam: '', mic: '' }) // no volver a intentarlo en cada arranque
         return await navigator.mediaDevices.getUserMedia({ audio: AUD, video: { ...RES } })
       }
@@ -193,11 +193,11 @@ async function startCamPreview() {
     await listDevices()
   } catch (e) {
     const hint = {
-      NotReadableError: 'la cámara o el micro están EN USO por otra app (Zoom, Photo Booth, QuickTime, Chrome…). Ciérrala y reintenta.',
-      NotAllowedError: 'permiso denegado. Da acceso a Cámara y Micrófono en Ajustes del sistema › Privacidad y seguridad.',
-      OverconstrainedError: 'el dispositivo seleccionado ya no existe. Elige otro en los desplegables.',
-      NotFoundError: 'no se detecta ninguna cámara/micrófono.',
-      AbortError: 'el sistema interrumpió la cámara. Reintenta.',
+      NotReadableError: 'the camera or mic are IN USE by another app (Zoom, Photo Booth, QuickTime, Chrome…). Close it and try again.',
+      NotAllowedError: 'permission denied. Grant Camera and Microphone access in System Settings › Privacy & Security.',
+      OverconstrainedError: 'the selected device no longer exists. Pick another one from the dropdowns.',
+      NotFoundError: 'no camera or microphone detected.',
+      AbortError: 'the system interrupted the camera. Try again.',
     }[e.name]
     log(`error webcam/micro [${e.name}]: ${e.message}${hint ? ' — ' + hint : ''}`, 'err')
   } finally { updateReady() }
@@ -209,7 +209,7 @@ function syncBlurUi() {
   if (finalToggle) { finalToggle.checked = state.finalBackground; finalToggle.disabled = !!(state.recording || state.recordingBusy || state.rawRecord) }
   if (finalHint) finalHint.style.display = state.blur && state.nativeCamera && state.finalBackground && !state.rawRecord ? '' : 'none'
 
-  // El interruptor de "grabar sin fondo" solo tiene sentido si hay algo que
+  // El interruptor de "record without background" solo tiene sentido si hay algo que
   // componer; sin blur, lo que se graba ya es el crudo.
   const rawRow = el('rawRecordRow')
   if (rawRow) rawRow.style.display = state.blur ? '' : 'none'
@@ -235,7 +235,7 @@ async function ensureBgLoaded() {
   if (!state.bgPath || state.bgData) return
   state.bgData = await window.studio.loadBackground(state.bgPath)
   if (!state.bgData) {
-    log('la imagen de fondo guardada ya no existe, se quita', 'warn')
+    log('the saved background image no longer exists, removing it', 'warn')
     state.bgPath = ''
     persist({ bgpath: '' })
   }
@@ -293,7 +293,7 @@ async function toggleRawRecord() {
   persist({ rawrecord: !!state.rawRecord })
   syncBlurUi()
   if (!state.rawRecord && !state.finalBackground && state.blur && !state.pipe) await recalibrateBackground()
-  log(state.rawRecord ? 'Se guardará la cámara original para el montaje' : state.finalBackground ? 'El fondo se aplicará automáticamente al terminar' : 'Se grabará el fondo de la previsualización')
+  log(state.rawRecord ? 'The original camera will be kept for editing' : state.finalBackground ? 'The background will be applied automatically when the take ends' : 'The preview background will be recorded')
 }
 
 async function toggleBlur() {
@@ -322,9 +322,9 @@ async function recalibrateBackground(calibration = null) {
     state.pipe = pipe
     state.camStream = output; el('camPreview').srcObject = output
     await previous?.stop()
-    el('recalibrateHelp').textContent = 'Si el pelo o la silla se recortan mal, usa «Calibrar persona y silla» antes de grabar.'
-    toast('Fondo recalibrado. Comprueba el recorte antes de grabar.')
-  } catch (error) { await pipe.stop(); log('No se pudo recalibrar el fondo: ' + error.message, 'err') }
+    el('recalibrateHelp').textContent = 'If hair or the chair are cut out badly, use “Calibrate person and chair” before recording.'
+    toast('Background recalibrated. Check the cut-out before recording.')
+  } catch (error) { await pipe.stop(); log('Could not recalibrate the background: ' + error.message, 'err') }
   finally { state.recalibrating = false; updateReady() }
 }
 
@@ -333,7 +333,7 @@ async function recalibrateBackground(calibration = null) {
 function onBlurLevel(e) {
   state.blurLevel = Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0))
   persist({ blurlevel: state.blurLevel })
-  if (state.pipe) state.pipe.setBlurAmount(state.blurLevel / 100).catch(error => log('No se pudo ajustar el fondo: ' + error.message, 'err'))
+  if (state.pipe) state.pipe.setBlurAmount(state.blurLevel / 100).catch(error => log('Could not set the background: ' + error.message, 'err'))
 }
 
 // ---- Camera crop -----------------------------------------------------------
@@ -515,16 +515,16 @@ async function enableSystemAudio() {
     disp.getVideoTracks().forEach((t) => t.stop())
     const sysTrack = disp.getAudioTracks()[0]
     if (!sysTrack) {
-      log('este macOS/Electron no entregó audio del sistema (loopback no disponible)', 'err')
+      log('this macOS/Electron did not deliver system audio (loopback unavailable)', 'err')
       disp.getTracks().forEach((t) => t.stop())
       return false
     }
     state.sysStream = new MediaStream([sysTrack])
     buildAudioMix()
-    log('🔊 sonido del sistema activado (se mezcla con tu voz)', 'ok')
+    log('🔊 system sound on (mixed with your voice)', 'ok')
     return true
   } catch (e) {
-    log(`no se pudo capturar el sonido del sistema [${e.name}]: ${e.message}`, 'err')
+    log(`could not capture system sound [${e.name}]: ${e.message}`, 'err')
     return false
   }
 }
@@ -620,17 +620,17 @@ function updateReady() {
   el('keepMainVisible').disabled = state.recording
   el('recalibrateBg').disabled = !!(state.recording || state.recalibrating || !state.blur || !state.rawCam?.active)
   el('calibrateSelection').disabled = el('recalibrateBg').disabled || !!state.selectingCamera
-  el('recalibrateBg').textContent = state.recalibrating ? 'Recalibrando…' : 'Recalibrar fondo'
+  el('recalibrateBg').textContent = state.recalibrating ? 'Recalibrando…' : 'Recalibrate background'
   el('recalibrateBg').setAttribute('aria-busy', String(!!state.recalibrating))
   el('recalibrateHelp').hidden = !state.blur
-  if (state.recordingSession) el('recHint').textContent = `El grabador guarda en: ${state.recordingSession.name}`
-  else if (state.selectedSourceId && !state.recording) el('recHint').textContent = `Grabarás en: ${state.currentName}`
+  if (state.recordingSession) el('recHint').textContent = `The recorder saves to: ${state.recordingSession.name}`
+  else if (state.selectedSourceId && !state.recording) el('recHint').textContent = `You will record into: ${state.currentName}`
 }
 
 function updateCameraResolution() {
   const settings = state.rawCam?.getVideoTracks()[0]?.getSettings()
-  if (!settings?.width || !settings?.height) { el('camCap').textContent = 'Cámara'; return }
-  let text = `Cámara · ${settings.width} × ${settings.height}`
+  if (!settings?.width || !settings?.height) { el('camCap').textContent = 'Camera'; return }
+  let text = `Camera · ${settings.width} × ${settings.height}`
   if (state.crop && state.cropRect) {
     const r = state.cropRect
     const width = Math.max(2, Math.round(settings.width * r.w)) & ~1
@@ -670,7 +670,7 @@ function runFloatCountdown(from = 3) {
     const iv = setInterval(() => {
       n -= 1
       if (n > 0) window.studio.sendElapsed({ text: String(n), count: true })
-      else { clearInterval(iv); window.studio.sendElapsed({ text: '¡YA!', count: true, go: true }); resolve() }
+      else { clearInterval(iv); window.studio.sendElapsed({ text: 'GO!', count: true, go: true }); resolve() }
     }, 900)
   })
 }
@@ -687,7 +687,7 @@ function runCountdown(from = 3) {
     const iv = setInterval(() => {
       n -= 1
       if (n > 0) show(n)
-      else if (n === 0) show('¡YA!', true)
+      else if (n === 0) show('GO!', true)
       else { clearInterval(iv); el('countdown').classList.add('hidden'); resolve() }
     }, 900)
   })
@@ -746,8 +746,8 @@ async function beginRecording() {
     try {
       const df = await window.studio.diskFree(state.recordingSession.dir)
       if (df && df.low) {
-        const go = await openConfirm('Poco espacio en disco', `Quedan ${df.human} libres (recomendado ≥ ${df.minHuman}). ¿Grabar igualmente?`, { danger: true, okLabel: 'Grabar' })
-        if (!go) { setStatus('listo'); updateReady(); return }
+        const go = await openConfirm('Poco espacio en disco', `Only ${df.human} free (recommended ≥ ${df.minHuman}). Record anyway?`, { danger: true, okLabel: 'Record' })
+        if (!go) { setStatus('ready'); updateReady(); return }
       }
     } catch { /* sin dato de disco */ }
     await runCountdown(3); await playStartBeep(); await startRecording()
@@ -768,10 +768,10 @@ function enqueueChunk(track, blob) {
     } catch (e) {
       if (!rec.streamFail) {
         rec.streamFail = true
-        rec.errors.push('escritura a disco falló: ' + e.message)
+        rec.errors.push('writing to disk failed: ' + e.message)
         console.error('[rec] chunk write failed, falling back to memory', e)
         log('⚠ no puedo escribir en disco en vivo; guardo en memoria hasta parar', 'err')
-        window.studio.floatWarn('⚠ Escritura a disco falló — la toma se guarda en memoria')
+        window.studio.floatWarn('⚠ Writing to disk failed — the take is buffered in memory')
       }
       state.chunks[track].push(blob)
     }
@@ -782,7 +782,7 @@ function drainChunks() { return Promise.all([rec.queue.screen, rec.queue.webcam]
 // `fromFloat` preserves main-window visibility and the session's project.
 async function startRecording(fromFloat = false) {
   if (state.recording || state.recalibrating || state.selectingCamera) return
-  if (!state.screenStream?.active || pendingSourceId || !state.camStream) { log('faltan streams o la fuente sigue abriéndose', 'err'); setStatus('listo'); updateReady(); return }
+  if (!state.screenStream?.active || pendingSourceId || !state.camStream) { log('streams are missing or the source is still opening', 'err'); setStatus('ready'); updateReady(); return }
   state.chunks = { screen: [], webcam: [] }
   rec.clip = null; rec.streamFail = false; rec.errors = []; rec.pauses = []
   rec.audioDelayMs = 0; rec.cameraSeed = null; rec.capturePipe = null
@@ -793,7 +793,7 @@ async function startRecording(fromFloat = false) {
   rec.lastData = { screen: 0, webcam: 0 }; rec.firstData = { screen: null, webcam: null }; rec.warned = { screen: false, webcam: false }
   rec.queue = { screen: Promise.resolve(), webcam: Promise.resolve() }
   try { rec.clip = await window.studio.clipBegin(rec.projectDir) }
-  catch (e) { rec.streamFail = true; rec.errors.push('no pude abrir el clip en disco: ' + e.message); log('⚠ ' + e.message + ' — grabo en memoria', 'err') }
+  catch (e) { rec.streamFail = true; rec.errors.push('could not open the clip on disk: ' + e.message); log('⚠ ' + e.message + ' — grabo en memoria', 'err') }
 
   // Capture original frames for automatic final matting. The live model pauses
   // during capture so it cannot compete with the video encoder.
@@ -814,7 +814,7 @@ async function startRecording(fromFloat = false) {
     }
     rec.capturePipe = pipe
     state.camStream = state.rawCam; el('camPreview').srcObject = state.rawCam
-    log('Grabación original a 1080p; el fondo se aplicará al terminar')
+    log('Recording the original at 1080p; the background is applied when the take ends')
   }
   const camBase = ((state.rawRecord || rec.cam.afterRecord) && state.rawCam) ? state.rawCam : state.camStream
   let camForRec = camBase
@@ -825,10 +825,10 @@ async function startRecording(fromFloat = false) {
       camForRec = state.cropPipe.start(camBase, state.cropRect)
       state.recWebcamDims = state.cropPipe.outDims
       log(`✂️ grabando recorte ${state.recWebcamDims.width}×${state.recWebcamDims.height}`)
-    } catch (e) { log('recorte falló, grabo cámara completa: ' + e.message, 'warn'); camForRec = camBase; state.cropPipe = null }
+    } catch (e) { log('cropping failed, recording the full camera: ' + e.message, 'warn'); camForRec = camBase; state.cropPipe = null }
   }
   if (state.rawRecord && state.rawCam && state.camStream !== state.rawCam) {
-    log('🎥 grabando la cámara SIN fondo (se recompone al montar)')
+    log('🎥 recording the camera WITHOUT background (recomposed at edit time)')
   }
   // Pick the audio track for the cam recorder: the mic+system MIX when enabled,
   // otherwise the plain mic. webcam.webm stays the single audio source.
@@ -839,19 +839,19 @@ async function startRecording(fromFloat = false) {
     recAudioTrack = await rec.audioSync.start(recAudioTrack, () => state.pipe?.stats.latencyMs || 0)
   }
   if (recVideoTrack && recAudioTrack) camForRec = new MediaStream([recVideoTrack, recAudioTrack])
-  if (state.sysAudio && state.mixedAudioTrack) log('🔊 grabando voz + sonido del sistema')
+  if (state.sysAudio && state.mixedAudioTrack) log('🔊 recording voice + system sound')
   console.log('[rec] cam tracks', camForRec.getTracks().map((t) => `${t.kind}:${t.readyState}`).join(','),
     '| screen', state.screenStream.getTracks().map((t) => `${t.kind}:${t.readyState}`).join(','))
   // If a recorded track ends mid-take (a stalled crop/mix generator), that's the
   // classic "stop does nothing" freeze — log it loudly.
   camForRec.getTracks().forEach((t) => t.addEventListener('ended', () => {
     console.error('[rec] cam track ENDED mid-recording:', t.kind)
-    rec.errors.push(`pista de cámara ${t.kind} se cortó`)
-    log(`⚠ pista ${t.kind} se cortó durante la grabación`, 'err'); window.studio.floatWarn(`⚠ La pista ${t.kind} de la cámara se ha cortado`)
+    rec.errors.push(`camera track ${t.kind} was cut off`)
+    log(`⚠ ${t.kind} track was cut off during recording`, 'err'); window.studio.floatWarn(`⚠ La pista ${t.kind} de la cámara se ha cortado`)
   }))
   state.screenStream.getTracks().forEach((t) => t.addEventListener('ended', () => {
-    rec.errors.push('pista de pantalla se cortó')
-    log('⚠ la captura de pantalla se ha cortado', 'err'); window.studio.floatWarn('⚠ La captura de pantalla se ha cortado')
+    rec.errors.push('screen track was cut off')
+    log('⚠ the screen capture was cut off', 'err'); window.studio.floatWarn('⚠ La captura de pantalla se ha cortado')
   }))
 
   const screenRec = new MediaRecorder(state.screenStream, { mimeType: pickMime(false), videoBitsPerSecond: 8_000_000 })
@@ -894,7 +894,7 @@ async function startRecording(fromFloat = false) {
   updateReady()
   renderSources()
   setStatus('grabando', 'recording')
-  el('pauseBtn').disabled = false; el('pauseBtn').textContent = 'Pausar'; el('pauseBtn').className = 'pause'
+  el('pauseBtn').disabled = false; el('pauseBtn').textContent = 'Pause'; el('pauseBtn').className = 'pause'
   el('stopBtn').disabled = false; el('recHint').textContent = `Grabando en: ${rec.projectName}`
   log('● grabando…' + (rec.clip ? ` (${rec.clip.clipId}, a disco)` : ' (en memoria)'))
   window.studio.recordingStarted({ continuing: fromFloat, projectName: rec.projectName, keepMainVisible: state.keepMainVisible, camId: state.camId, blur: state.blur, blurLevel: state.blurLevel, bg: state.bgData ? state.bgData.dataUrl : null, crop: state.crop, cropRect: state.crop ? state.cropRect : null })
@@ -911,9 +911,9 @@ async function startRecording(fromFloat = false) {
       if (now - rec.lastData[track] > 3000 && !rec.warned[track]) {
         rec.warned[track] = true
         const label = track === 'screen' ? 'pantalla' : 'cámara'
-        rec.errors.push(`${label}: sin datos durante >3 s`)
-        log(`⚠ el grabador de ${label} lleva >3 s sin entregar datos`, 'err')
-        window.studio.floatWarn(`⚠ La ${label} ha dejado de grabar — para y vuelve a empezar`)
+        rec.errors.push(`${label}: no data for >3 s`)
+        log(`⚠ the ${label} recorder has delivered no data for >3 s`, 'err')
+        window.studio.floatWarn(`⚠ The ${label} stopped recording — stop and start again`)
       } else if (now - rec.lastData[track] <= 3000) rec.warned[track] = false
     }
   }, 1000)
@@ -930,7 +930,7 @@ function pauseResume() {
     rec.pauses.push([Math.round(state.pauseStart - state.tStart), Math.round(now - state.tStart)])
     state.recorders.forEach((r) => r.state === 'paused' && r.resume())
     rec.lastData = { screen: now, webcam: now }
-    state.paused = false; setStatus('grabando', 'recording'); el('pauseBtn').textContent = 'Pausar'; el('pauseBtn').className = 'pause'; log('▶ seguir')
+    state.paused = false; setStatus('grabando', 'recording'); el('pauseBtn').textContent = 'Pause'; el('pauseBtn').className = 'pause'; log('▶ seguir')
   }
   renderSources()
 }
@@ -958,7 +958,7 @@ function stopRecorders(recorders) {
       r.onstop = finish
       r.stop()
     } catch { finish() }
-    setTimeout(() => { if (!done) rec.errors.push('un grabador no confirmó el cierre (onstop) en 5 s'); finish() }, 5000)
+    setTimeout(() => { if (!done) rec.errors.push('a recorder did not confirm shutdown (onstop) within 5 s'); finish() }, 5000)
   })))
 }
 
@@ -981,7 +981,7 @@ async function stopRecording(returnToMain = true) {
   renderSources()
   updateReady()
   try { await saveClip(durationMs) } // sets the post-save hint last, so it isn't overwritten
-  catch (e) { log('✗ no se pudo guardar el clip: ' + e.message, 'err'); toast('✗ No se pudo guardar el clip: ' + e.message, 'err', 6000); setStatus('error', 'err'); state.recordingBusy = false; endRecordingSession(); return }
+  catch (e) { log('✗ could not save the clip: ' + e.message, 'err'); toast('✗ No se pudo guardar el clip: ' + e.message, 'err', 6000); setStatus('error', 'err'); state.recordingBusy = false; endRecordingSession(); return }
   state.recordingBusy = false
   if (!returnToMain) window.studio.floatIdle({ clips: rec.savedSummary?.clipCount || 0, projectName: rec.projectName })
   else endRecordingSession()
@@ -1000,7 +1000,7 @@ function resumeRecordingPreview() {
 let floatArming = false
 async function recordFromFloat() {
   if (state.recording || state.recordingBusy || floatArming || !state.recordingSession) return
-  if (!state.screenStream?.active || pendingSourceId || !state.camStream) { log('faltan streams o la fuente sigue abriéndose', 'err'); setStatus('listo'); updateReady(); return }
+  if (!state.screenStream?.active || pendingSourceId || !state.camStream) { log('streams are missing or the source is still opening', 'err'); setStatus('ready'); updateReady(); return }
   floatArming = true; state.recordingBusy = true
   try { await runFloatCountdown(3); await playStartBeep(); await startRecording(true) }
   finally { floatArming = false; state.recordingBusy = false; updateReady() }
@@ -1062,8 +1062,8 @@ async function saveClip(durationMs) {
   const secs = (durationMs / 1000).toFixed(1)
   el('doneMsg').textContent = `✓ Clip ${summary.clipCount} guardado (${secs}s)` + (rec.cam?.afterRecord ? ' · Preparando fondo…' : '')
   el('recHint').textContent = `Listo. Tienes ${summary.clipCount} clip${summary.clipCount > 1 ? 's' : ''}.`
-  log(`✓ ${summary.clipCount}º clip guardado (${secs}s)` + (rec.errors.length ? ` — con avisos: ${rec.errors.join('; ')}` : ''), rec.errors.length ? 'warn' : 'ok')
-  toast(`✓ Clip ${summary.clipCount} guardado en ${rec.projectName} (${secs}s)` + (rec.errors.length ? ' — revisa los avisos' : ''), rec.errors.length ? 'warn' : 'ok')
+  log(`✓ ${summary.clipCount}º clip guardado (${secs}s)` + (rec.errors.length ? ` — with warnings: ${rec.errors.join('; ')}` : ''), rec.errors.length ? 'warn' : 'ok')
+  toast(`✓ Clip ${summary.clipCount} guardado en ${rec.projectName} (${secs}s)` + (rec.errors.length ? ' — check the warnings' : ''), rec.errors.length ? 'warn' : 'ok')
 }
 
 // Discard the current take without saving; optionally restart a fresh recording.
@@ -1086,12 +1086,12 @@ async function discardTake(restart) {
   // The ↺ button always comes from the floating bar: re-record in place instead
   // of restoring the main window and running a (now-hidden) countdown.
   if (restart) recordFromFloat()
-  else { endRecordingSession(); setStatus('listo'); updateReady() }
+  else { endRecordingSession(); setStatus('ready'); updateReady() }
 }
 
 // Stop a failed effect explicitly instead of recording a frozen camera frame.
 window.addEventListener('camera-effect-error', async event => {
-  log('Error del efecto de cámara: ' + event.detail, 'err')
+  log('Camera effect error: ' + event.detail, 'err')
   if (state.recording) await stopRecording()
   stopCam()
   updateReady()

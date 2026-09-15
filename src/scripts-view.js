@@ -1,10 +1,10 @@
 'use strict'
 
-// Vista Guiones + "Grabar con este guion" (comparte state/el/toast/log con renderer.js).
+// Vista Guiones + "Record with this script" (comparte state/el/toast/log con renderer.js).
 //
 // Flujo: perfil de estilo (canal → style_profile.md + pace.json) → brief
 // estructurado → borrador con 3 ganchos + fuentes → el usuario edita / reescribe /
-// pide ganchos → "Grabar con este guion" crea el proyecto con script.md y guarda
+// pide ganchos → "Record with this script" crea el proyecto con script.md y guarda
 // el par borrador→final en _scripts/feedback/ para que el agente aprenda.
 
 const SCRIPT_KEYS = ['style', 'script', 'hooks']
@@ -37,7 +37,7 @@ function applyHook(text, hook) {
   return t
 }
 
-// ---- UI: estado del guion actual --------------------------------------------
+// ---- UI: estado del script actual --------------------------------------------
 
 function setScriptText(text, path) {
   state.currentScriptPath = path || state.currentScriptPath
@@ -55,10 +55,10 @@ function renderHooks(hooks) {
   const box = el('hooksBox')
   if (!hooks.length) { box.classList.add('hidden'); box.innerHTML = ''; return }
   box.classList.remove('hidden')
-  box.innerHTML = '<div class="card-head"><h4>Elige el gancho</h4><span class="card-help">Sustituye el GANCHO del guion y quita el bloque de opciones.</span></div>'
+  box.innerHTML = '<div class="card-head"><h4>Pick the hook</h4><span class="card-help">Replaces the script HOOK and removes the options block.</span></div>'
   hooks.forEach((h, i) => {
     const d = document.createElement('div'); d.className = 'hook-opt'
-    d.innerHTML = `<div class="hook-txt">${escapeHtml(h)}</div><button class="btn-secondary mini">Usar opción ${i + 1}</button>`
+    d.innerHTML = `<div class="hook-txt">${escapeHtml(h)}</div><button class="btn-secondary mini">Use option ${i + 1}</button>`
     d.querySelector('button').addEventListener('click', () => {
       el('scriptOut').value = applyHook(el('scriptOut').value, h)
       renderHooks([]); updateScriptMeta(); saveCurrentScript()
@@ -74,7 +74,7 @@ function renderScriptSources(text) {
 }
 async function loadVersions() {
   const sel = el('versionSel')
-  sel.innerHTML = '<option value="">versiones…</option>'
+  sel.innerHTML = '<option value="">versions…</option>'
   if (!state.currentScriptPath) { sel.classList.add('hidden'); return }
   let list = []
   try { list = await window.studio.scriptVersions(state.currentScriptPath) } catch { list = [] }
@@ -110,17 +110,17 @@ async function scriptDone(key, ok, result, error, cost) {
   const costTxt = cost && cost.cost != null ? ` · $${cost.cost.toFixed(2)}` : ''
   if (key === 'style') {
     await refreshProfileStatus()
-    toast(ok ? '✓ Perfil de estilo listo' + costTxt : '✗ El análisis falló: ' + (error || ''), ok ? 'ok' : 'err', ok ? 3500 : 7000)
+    toast(ok ? '✓ Style profile ready' + costTxt : '✗ Analysis failed: ' + (error || ''), ok ? 'ok' : 'err', ok ? 3500 : 7000)
   } else if (key === 'hooks') {
     el('genStatus').textContent = ok ? '✓ ganchos listos' + costTxt : '✗ ' + (error || 'error')
     if (ok && result) {
       const hooks = result.text.split(/^\s*OPCI[ÓO]N\s*\d+\s*$/mi).map((s) => s.trim()).filter(Boolean)
       renderHooks(hooks)
       toast('✓ Ganchos propuestos: elige uno', 'ok')
-    } else toast('✗ No se pudieron proponer ganchos', 'err')
+    } else toast('✗ Could not propose hooks', 'err')
   } else {
-    el('genStatus').textContent = ok ? '✓ guion listo' + costTxt : '✗ ' + (error || 'error')
-    toast(ok ? '✓ Guion listo' + costTxt : '✗ La generación falló: ' + (error || ''), ok ? 'ok' : 'err', ok ? 3500 : 7000)
+    el('genStatus').textContent = ok ? '✓ script ready' + costTxt : '✗ ' + (error || 'error')
+    toast(ok ? '✓ Script ready' + costTxt : '✗ Generation failed: ' + (error || ''), ok ? 'ok' : 'err', ok ? 3500 : 7000)
     if (ok && result) {
       setScriptText(result.text, result.path)
       renderScriptSources(result.sources)
@@ -138,14 +138,14 @@ async function refreshProfileStatus() {
   const upd = el('updateProfileBtn')
   if (st.hasProfile) {
     const parts = [`✓ Perfil listo`]
-    if (st.corpus) parts.push(`${st.corpus} vídeos`)
+    if (st.corpus) parts.push(`${st.corpus} videos`)
     if (st.pace && st.pace.wpm) parts.push(`${st.pace.wpm} palabras/min`)
-    if (st.feedbackPairs) parts.push(`${st.feedbackPairs} guion${st.feedbackPairs > 1 ? 'es' : ''} aprendido${st.feedbackPairs > 1 ? 's' : ''} de tus ediciones`)
+    if (st.feedbackPairs) parts.push(`${st.feedbackPairs} script${st.feedbackPairs > 1 ? 'es' : ''} aprendido${st.feedbackPairs > 1 ? 's' : ''} of your edits`)
     if (st.profileMtime) parts.push(`actualizado ${fmtDate(stampFromMs(st.profileMtime))}`)
     el('profileStatus').textContent = parts.join(' · ')
     upd.classList.remove('hidden')
   } else {
-    el('profileStatus').textContent = 'Sin perfil todavía. Pega tu canal y pulsa “Analizar mi canal”.'
+    el('profileStatus').textContent = 'No profile yet. Paste your channel and hit “Analyse my channel”.'
     upd.classList.add('hidden')
   }
   updateScriptMeta()
@@ -153,7 +153,7 @@ async function refreshProfileStatus() {
 
 async function ensureRoot() {
   if (state.root) return true
-  const d = await window.studio.chooseDir('Carpeta raíz de proyectos')
+  const d = await window.studio.chooseDir('Root folder for projects')
   if (!d) return false
   setRoot(d)
   return true
@@ -166,9 +166,9 @@ async function analyzeChannel(incremental = false) {
   if (!ch) { el('channelUrl').focus(); return }
   state.channel = ch; persist({ channel: ch })
   el('scriptLog').textContent = ''
-  setScriptBusy(true); el('profileStatus').textContent = incremental ? '· actualizando con vídeos nuevos…' : '· lanzando…'
+  setScriptBusy(true); el('profileStatus').textContent = incremental ? '· updating with new videos…' : '· lanzando…'
   const r = await window.studio.analyzeChannel(state.root, ch, incremental)
-  if (r && r.started === false && !r.already) { setScriptBusy(false); toast('✗ ' + (r.error || 'no arrancó'), 'err') }
+  if (r && r.started === false && !r.already) { setScriptBusy(false); toast('✗ ' + (r.error || 'did not start'), 'err') }
 }
 
 // ---- brief → generar / reescribir / ganchos --------------------------------------
@@ -192,7 +192,7 @@ async function generateScript() {
   el('scriptLog').textContent = ''
   setScriptBusy(true); el('genStatus').textContent = '· redactando…'
   const r = await window.studio.generateScript(state.root, topic, scriptBrief())
-  if (r && r.started === false && !r.already) { setScriptBusy(false); toast('✗ ' + (r.error || 'no arrancó'), 'err') }
+  if (r && r.started === false && !r.already) { setScriptBusy(false); toast('✗ ' + (r.error || 'did not start'), 'err') }
 }
 async function rewriteScript() {
   if (state.scriptsBusy || !state.currentScriptPath) return
@@ -201,34 +201,34 @@ async function rewriteScript() {
   await window.studio.saveScript(state.currentScriptPath, el('scriptOut').value) // rewrite the latest edits
   setScriptBusy(true); el('genStatus').textContent = '· reescribiendo…'
   const r = await window.studio.rewriteScript(state.root, state.currentScriptPath, fb, scriptBrief())
-  if (r && r.started === false && !r.already) { setScriptBusy(false); toast('✗ ' + (r.error || 'no arrancó'), 'err') }
+  if (r && r.started === false && !r.already) { setScriptBusy(false); toast('✗ ' + (r.error || 'did not start'), 'err') }
   el('scriptFeedback').value = ''
 }
 async function proposeHooks() {
-  if (state.scriptsBusy || !state.currentScriptPath) { if (!state.currentScriptPath) toast('Genera o abre un guion primero', 'warn'); return }
+  if (state.scriptsBusy || !state.currentScriptPath) { if (!state.currentScriptPath) toast('Generate or open a script first', 'warn'); return }
   await window.studio.saveScript(state.currentScriptPath, el('scriptOut').value)
   setScriptBusy(true); el('genStatus').textContent = '· proponiendo ganchos…'
   const r = await window.studio.hooksScript(state.root, state.currentScriptPath)
-  if (r && r.started === false && !r.already) { setScriptBusy(false); toast('✗ ' + (r.error || 'no arrancó'), 'err') }
+  if (r && r.started === false && !r.already) { setScriptBusy(false); toast('✗ ' + (r.error || 'did not start'), 'err') }
 }
 async function saveCurrentScript() {
-  if (!state.currentScriptPath) { el('genStatus').textContent = 'genera un guion primero'; return }
+  if (!state.currentScriptPath) { el('genStatus').textContent = 'generate a script first'; return }
   await window.studio.saveScript(state.currentScriptPath, el('scriptOut').value)
   updateScriptMeta()
-  toast('✓ Guion guardado', 'ok'); renderScriptsList()
+  toast('✓ Script saved', 'ok'); renderScriptsList()
 }
 async function copyScript() {
-  try { await navigator.clipboard.writeText(el('scriptOut').value); toast('✓ Copiado al portapapeles', 'ok') }
-  catch (e) { toast('✗ No se pudo copiar: ' + e.message, 'err') }
+  try { await navigator.clipboard.writeText(el('scriptOut').value); toast('✓ Copied to the clipboard', 'ok') }
+  catch (e) { toast('✗ Could not copy: ' + e.message, 'err') }
 }
 async function restoreVersion() {
   const p = el('versionSel').value
   if (!p) return
-  const ok = await openConfirm('Restaurar versión', 'Se sustituirá el texto actual por esa versión (el actual se guarda como versión nueva).', {})
+  const ok = await openConfirm('Restore version', 'The current text will be replaced by that version (the current one is saved as a new version).', {})
   el('versionSel').value = ''
   if (!ok) return
   const text = await window.studio.readScript(p)
-  if (!text) { toast('✗ No pude leer la versión', 'err'); return }
+  if (!text) { toast('✗ Could not read the version', 'err'); return }
   el('scriptOut').value = plainText(text)
   await saveCurrentScript()
 }
@@ -236,7 +236,7 @@ async function renderScriptsList() {
   if (!state.root) return
   scriptsList = await window.studio.listScripts(state.root)
   const box = el('scriptsList'); box.innerHTML = ''
-  if (!scriptsList.length) { box.innerHTML = '<div class="empty">Aún no hay guiones guardados.</div>'; return }
+  if (!scriptsList.length) { box.innerHTML = '<div class="empty">No saved scripts yet.</div>'; return }
   for (const s of scriptsList) {
     const it = document.createElement('div'); it.className = 'script-item'
     const meta = `${s.words} palabras · ~${estDuration(s.words)}${s.hasSources ? ' · fuentes' : ''}`
@@ -249,7 +249,7 @@ async function renderScriptsList() {
       el('scriptOut').scrollIntoView({ behavior: 'smooth', block: 'center' })
     })
     it.querySelector('.si-del').addEventListener('click', async () => {
-      const ok = await openConfirm('Borrar guion', `¿Borrar “${s.title}”? Se moverá a la papelera.`, { danger: true })
+      const ok = await openConfirm('Delete script', `Delete “${s.title}”? It will be moved to the trash.`, { danger: true })
       if (!ok) return
       await window.studio.deleteScript(s.path)
       if (state.currentScriptPath === s.path) { state.currentScriptPath = ''; el('scriptOut').value = ''; el('scriptName').textContent = ''; updateScriptMeta(); renderHooks([]); renderScriptSources('') }
@@ -259,14 +259,14 @@ async function renderScriptsList() {
   }
 }
 
-// ---- grabar con este guion --------------------------------------------------------
+// ---- grabar con este script --------------------------------------------------------
 
 async function recordWithScript() {
   if (!(await ensureRoot())) return
   let text = el('scriptOut').value.trim()
   if (!text) { el('scriptOut').focus(); return }
   if (parseHooks(text).length) {
-    const go = await openConfirm('Gancho sin elegir', 'El guion todavía tiene el bloque de 3 ganchos. ¿Grabar con el gancho principal y descartar las opciones?', {})
+    const go = await openConfirm('No hook chosen', 'The script still has the 3-hook block. Record with the main hook and discard the options?', {})
     if (!go) return
     text = stripHooksBlock(text)
     el('scriptOut').value = text
@@ -274,10 +274,10 @@ async function recordWithScript() {
   if (state.currentScriptPath) {
     await window.studio.saveScript(state.currentScriptPath, text)
     // Par borrador→final para que el agente aprenda de tus correcciones.
-    try { const fb = await window.studio.scriptFeedback(state.root, state.currentScriptPath, text); if (fb && fb.ok) log('par de aprendizaje guardado: ' + fb.id, 'ok') } catch { /* opcional */ }
+    try { const fb = await window.studio.scriptFeedback(state.root, state.currentScriptPath, text); if (fb && fb.ok) log('learning pair saved: ' + fb.id, 'ok') } catch { /* opcional */ }
   }
-  const defName = (text.split('\n').find((l) => l.trim() && !/^[A-ZÁÉÍÓÚÑ0-9 ]{3,}$/.test(l.trim())) || 'Guion').replace(/^#+\s*/, '').slice(0, 40)
-  const name = await openPrompt('Nuevo proyecto para grabar con este guion', defName)
+  const defName = (text.split('\n').find((l) => l.trim() && !/^[A-ZÁÉÍÓÚÑ0-9 ]{3,}$/.test(l.trim())) || 'Script').replace(/^#+\s*/, '').slice(0, 40)
+  const name = await openPrompt('New project to record with this script', defName)
   if (name == null) return
   const summary = await window.studio.createProject(state.root, name.trim() || defName, { text, path: state.currentScriptPath || null })
   state.projects.unshift(summary)
@@ -291,14 +291,14 @@ async function recordWithScript() {
 function showScripts() {
   stopCam()
   hideAll(); el('viewScripts').classList.remove('hidden')
-  el('timer').classList.add('hidden'); setCrumb('Guiones'); setStatus('listo'); setNav('scripts')
+  el('timer').classList.add('hidden'); setCrumb('Scripts'); setStatus('ready'); setNav('scripts')
   loadScripts()
 }
 
 async function loadScripts() {
   el('channelUrl').value = state.channel || ''
   if (!state.root) {
-    el('profileStatus').textContent = 'Primero elige una carpeta en la pestaña Proyectos.'
+    el('profileStatus').textContent = 'Pick a folder in the Projects tab first.'
     el('scriptsList').innerHTML = '<div class="empty">—</div>'
     return
   }

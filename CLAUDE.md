@@ -170,7 +170,7 @@ barra hacia adelante) en el `<video>`; con `net.fetch(file://)` no funcionaba po
 ---
 
 ## Convenciones y trampas
-- **UI y mensajes al usuario en español.**
+- **UI y mensajes al usuario en INGLÉS** (cambiado el 15/09/2026: el repo es público). Las respuestas al usuario en esta conversación siguen en español.
 - Al tocar el renderer o la skill, **sincroniza las dos copias** de `video-use` (repo vendorizado
   ↔ `~/Developer/video-use`).
 - **Secretos**: la API key de HeyGen vive en `~/Documents/avatar-muton/.env` (`HEYGEN_API_KEY`) y

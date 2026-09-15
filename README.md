@@ -8,10 +8,7 @@ video for you: automatic shot selection (full-cam / screen / PiP), subtitles,
 
 You record. The agent edits.
 
-> **Note:** the application interface is in **Spanish**. Everything else — code, docs, commit
-> history — is in English.
-
-![Projects gallery](docs/screenshots/projects.png)
+![Record view: source picker, screen preview and camera with the background already replaced](docs/screenshots/recording.png)
 
 ## How it works
 
@@ -68,7 +65,7 @@ screen preview is black, check that permission and that the selected source stil
 
 ![Editor and agent options](docs/screenshots/editor.png)
 
-In the top bar, **Agente → Codex** switches the agent used for the next edits, iterations, style
+In the top bar, **Agent → Codex** switches the agent used for the next edits, iterations, style
 analysis and scripts. The choice persists across restarts; Claude Code is the default. Tasks and
 terminals that are already running stay on the agent they started with.
 
@@ -94,17 +91,14 @@ bundled with this app.
 
 ### Projects tab
 
+![Projects gallery](docs/screenshots/projects.png)
+
 1. Pick the **root folder** where all projects will live.
 2. Type a name and hit **＋ Create** (it becomes the active project).
 3. The gallery shows every project: clip count, duration, date, and its **final edit** (poster
    plus ▶ to open it) when `edit/final.mp4` exists.
 
 ### Record tab
-
-![Record view: source picker, screen preview and camera with the background replaced](docs/screenshots/recording.png)
-
-*Recording the app itself: the screen preview on the left is the VibeTube window, and the camera on
-the right already shows the replaced background.*
 
 1. **Pick** the screen or window. Sources are grouped by type and labelled; the selected one is
    highlighted. **Refresh** reloads the list and its thumbnails.
@@ -116,7 +110,7 @@ the right already shows the replaced background.*
 
 ### Demoing the app itself while recording
 
-Turn on **Mantener interfaz visible al grabar** ("keep the interface visible while recording"), next
+Turn on **Keep the interface visible while recording**, next
 to the Record button. The setting persists: the main window stays open and capturable, and the small
 floating controls appear as usual. Turned off, the main window hides during the take. Select the
 screen, or the VibeTube window itself, to include the interface in the video.
@@ -186,8 +180,8 @@ improving presence and clarity at 48 kHz.
    remuxed into `webcam.webm` without re-encoding the video.
 2. **On demand from the UI.**
    - **Per clip:** the ✨ button on each clip card processes or re-processes it.
-   - **Whole project:** **`Mejorar audio (IA)`** in the clip list header.
-   - **Montage bar:** the **`Voz de estudio (NVIDIA)`** switch (on by default).
+   - **Whole project:** **`Enhance audio (AI)`** in the clip list header.
+   - **Montage bar:** the **`Studio voice (NVIDIA)`** switch (on by default).
 3. **Manually from the CLI:**
    ```bash
    # One clip:
@@ -230,7 +224,7 @@ improving presence and clarity at 48 kHz.
 
 - **Full HD camera.** 1920×1080 at 30 FPS is requested with no artificial browser scaling. The app
   shows the resolution the device actually accepts and, when cropping, the resolution of the
-  resulting file. Turn off "Recortar cámara" to keep the full 1920×1080. Lower-resolution cameras
+  resulting file. Turn off "Crop camera" to keep the full 1920×1080. Lower-resolution cameras
   keep whatever they can deliver; AI background removal may reduce the frame rate.
 - **Camera compression.** The VP9 budget scales with the recorded pixels, around 16.6 Mb/s for Full
   HD (it used to ask for 4 Mb/s at any size). Real bitrate depends on content and encoder. Cropping
@@ -245,7 +239,7 @@ improving presence and clarity at 48 kHz.
   Closing the effect does not stop the camera or its audio. Errors are reported rather than silently
   falling back to another engine. Cut-out mistakes are still possible depending on chair and
   lighting.
-  On Apple Silicon, **"Fondo al terminar (máxima fluidez)" is on by default**: the original camera is
+  On Apple Silicon, **"Background after the take (smoothest)" is on by default**: the original camera is
   recorded and MatAnyone2 is applied afterwards. Turn it off to record the live effect instead.
 - **Calibrate person and chair.** Mark your torso and the chair back on a still frame. With EdgeSAM
   installed, that selection initialises MatAnyone2 so both are preserved. The camera stays visible
@@ -306,14 +300,14 @@ take by default. The camera is captured directly at 1080p; the preview model is 
 take and the view shows the original image. The original, the chosen background and the calibration
 (image and alpha from the same frame) are stored next to the clip. The queue processes every frame
 on a 30 FPS timeline even when computing takes longer, and tracking uses video time rather than
-processing time. Jobs yield when another recording starts. The clip shows "Preparando fondo" until
+processing time. Jobs yield when another recording starts. The clip shows "Background pending" until
 dimensions, frame count and audio have been verified; audio is copied without re-encoding and its
 hash checked before the video is replaced. Voice enhancement and montage wait for it to finish.
 An eight-second person sample held 30 FPS and took about 42 seconds to process. Output at 30 FPS
 does **not** recover frames the camera had already dropped.
 
 The original is kept as `camera-original.webm` and the validated result replaces `webcam.webm`
-atomically. On failure the original is kept and "Reintentar fondo" appears. Reopening the project
+atomically. On failure the original is kept and "Background pending · Retry" appears. Reopening the project
 resumes interrupted jobs from the original. Old clips are never reprocessed.
 
 ## Headless agent
@@ -321,7 +315,7 @@ resumes interrupted jobs from the original. Old clips are never reprocessed.
 - Idle timeout (15 min without events) and a 3 h cap; cancelling kills the whole process group
   (including ffmpeg and python). Runs are recorded in `project.json.agentRuns` with the provider,
   duration and available metrics: cost and turns for Claude, tokens for Codex (its CLI does not
-  report a dollar cost). Full log in `edit/_agent.log` (⋯ → "Ver log completo").
+  report a dollar cost). Full log in `edit/_agent.log` (⋯ → "View the agent's full log").
 - Orphan agents from a previous run are killed at startup (`userData/agents.json`).
 - The model is inherited from the chosen CLI's configuration (`~/.claude/settings.json` or
   `$CODEX_HOME/config.toml`, usually `~/.codex/config.toml`); it is not pinned with `--model`.

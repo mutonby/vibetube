@@ -187,7 +187,7 @@ function setNav(which) {
 function showHome() {
   stopCam()
   hideAll(); el('viewHome').classList.remove('hidden')
-  el('timer').classList.add('hidden'); setCrumb(''); setStatus('listo'); setNav('projects'); loadHome()
+  el('timer').classList.add('hidden'); setCrumb(''); setStatus('ready'); setNav('projects'); loadHome()
 }
 async function openProject(dir, stage) {
   stopCam()
@@ -196,7 +196,7 @@ async function openProject(dir, stage) {
   state.current = d.dir; state.currentName = d.name; state.detail = d
   renderDetail(d)
   hideAll(); el('viewProject').classList.remove('hidden')
-  el('timer').classList.add('hidden'); setStatus('listo'); setNav('projects')
+  el('timer').classList.add('hidden'); setStatus('ready'); setNav('projects')
   const job = await window.studio.agentStatus(dir)
   renderPipeline(d, job)
   renderOrphans(d)
@@ -212,14 +212,14 @@ async function openProject(dir, stage) {
   else { setEditorRunning(false); feedClear() }
 }
 
-const STAGE_LABEL = { grabar: 'Grabar', montar: 'Montar', resultado: 'Resultado' }
+const STAGE_LABEL = { grabar: 'Record', montar: 'Edit', resultado: 'Result' }
 function setStage(stage) {
   state.stage = stage
   document.querySelectorAll('#viewProject .stage-panel').forEach((p) => p.classList.toggle('hidden', p.dataset.stage !== stage))
   document.querySelectorAll('#pipeline .pl-step').forEach((b) => b.classList.toggle('active', b.dataset.stage === stage))
   if (state.currentName) {
     setCrumb([
-      { label: 'Proyectos', go: showHome },
+      { label: 'Projects', go: showHome },
       { label: state.currentName, go: () => openProject(state.current) },
       { label: STAGE_LABEL[stage] || '' },
     ])
@@ -229,7 +229,7 @@ function renderPipeline(d, job) {
   const isFinal = d.hasFinal || d.hasFinal9x16
   const running = !!(job && job.status === 'running')
   el('plClips').textContent = d.clipCount ? `${d.clipCount} clip${d.clipCount > 1 ? 's' : ''}` : '—'
-  el('plMontar').textContent = running ? 'montando…' : isFinal ? 'hecho ✓' : d.clipCount ? 'pendiente' : '—'
+  el('plMontar').textContent = running ? 'editing…' : isFinal ? 'done ✓' : d.clipCount ? 'pending' : '—'
   el('plResult').textContent = isFinal ? (d.hasFinal && d.hasFinal9x16 ? '2 formatos' : '1 formato') : '—'
   document.querySelectorAll('#pipeline .pl-step').forEach((b) => {
     const s = b.dataset.stage
@@ -244,9 +244,9 @@ async function showRecord(dir, name) {
   hideAll(); el('viewRecord').classList.remove('hidden')
   el('timer').classList.remove('hidden'); setNav('projects')
   setCrumb([
-    { label: 'Proyectos', go: showHome },
+    { label: 'Projects', go: showHome },
     { label: name, go: () => openProject(dir) },
-    { label: 'Grabar' },
+    { label: 'Record' },
   ])
   const tp = state.detail && state.detail.dir === dir ? (state.detail.teleprompter || '') : ''
   el('tpText').value = tp
@@ -269,11 +269,11 @@ function tpPayload(text) {
   }
 }
 function updateTpToggle() {
-  el('tpToggleLbl').textContent = state.tpVisible ? 'Ocultar teleprompter' : 'Mostrar teleprompter'
+  el('tpToggleLbl').textContent = state.tpVisible ? 'Hide teleprompter' : 'Show teleprompter'
 }
 function toggleTeleprompter() {
   if (state.tpVisible) { window.studio.hideTeleprompter(); state.tpVisible = false }
-  else { window.studio.showTeleprompter(tpPayload(el('tpText').value)); state.tpVisible = true } // open even if empty: you can load a guion
+  else { window.studio.showTeleprompter(tpPayload(el('tpText').value)); state.tpVisible = true } // open even if empty: you can load a script
   updateTpToggle()
 }
 function toggleTpEditor() {
@@ -298,7 +298,7 @@ async function renderRecClips() {
   state.detail = d
   updateClipsCta()
   const box = el('recClips'); box.innerHTML = ''
-  if (!d.clips.length) { box.innerHTML = '<div class="empty">Aún no has grabado clips.</div>'; return }
+  if (!d.clips.length) { box.innerHTML = '<div class="empty">No clips recorded yet.</div>'; return }
   d.clips.forEach((c, i) => {
     const card = document.createElement('div'); card.className = 'rec-clip'; card.dataset.clip = c.id
     const thumb = c.thumbDataUrl ? `style="background-image:url('${c.thumbDataUrl}')"` : ''
@@ -307,7 +307,7 @@ async function renderRecClips() {
       <div class="rc-row"><span>Clip ${i + 1}</span><button class="rc-del danger" title="borrar">${icon('trash', 'icon icon-sm')}</button></div>`
     wireCameraPlayback(card, '.rc-play', c, d.dir)
     card.querySelector('.rc-del').addEventListener('click', async () => {
-      const ok = await openConfirm('Borrar clip', `¿Borrar el Clip ${i + 1}? Se moverá a la papelera.`, { danger: true })
+      const ok = await openConfirm('Borrar clip', `Delete Clip ${i + 1}? It will be moved to the trash.`, { danger: true })
       if (!ok) return
       await window.studio.deleteClip(state.current, c.id)
       renderRecClips()
@@ -331,7 +331,7 @@ function currentClipCount() {
 // ---- Home / gallery --------------------------------------------------------
 
 async function chooseRoot() {
-  const dir = await window.studio.chooseDir('Carpeta raíz de proyectos')
+  const dir = await window.studio.chooseDir('Root folder for projects')
   if (!dir) return
   setRoot(dir); await loadHome()
 }
@@ -350,13 +350,13 @@ function renderRecentRoots() {
   if (!sel) return
   const list = (state.recentRoots || []).filter((d) => d !== state.root)
   sel.classList.toggle('hidden', !list.length)
-  sel.innerHTML = '<option value="">recientes…</option>' + list.map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d.split('/').slice(-2).join('/'))}</option>`).join('')
+  sel.innerHTML = '<option value="">recent…</option>' + list.map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d.split('/').slice(-2).join('/'))}</option>`).join('')
 }
 function renderGallery() {
   const grid = el('projectsGrid'); grid.innerHTML = ''
   const addCard = document.createElement('div')
   addCard.className = 'project-card new-card'
-  addCard.innerHTML = `<div class="poster add">${icon('plus', 'icon icon-lg')}</div><div class="info"><div class="pname">Nuevo proyecto</div><div class="meta">graba clips nuevos</div></div>`
+  addCard.innerHTML = `<div class="poster add">${icon('plus', 'icon icon-lg')}</div><div class="info"><div class="pname">New project</div><div class="meta">record new clips</div></div>`
   addCard.addEventListener('click', () => el('newName').focus())
   grid.appendChild(addCard)
   for (const p of state.projects) {
@@ -364,14 +364,14 @@ function renderGallery() {
     card.className = 'project-card'
     const posterStyle = p.previewDataUrl ? `style="background-image:url('${p.previewDataUrl}')"` : ''
     const isFinal = p.hasFinal || p.hasFinal9x16
-    const badgeTxt = isFinal ? (p.hasFinal && p.hasFinal9x16 ? 'final ✓ +9:16' : 'final ✓') : 'borrador'
+    const badgeTxt = isFinal ? (p.hasFinal && p.hasFinal9x16 ? 'final ✓ +9:16' : 'final ✓') : 'draft'
     const durChip = p.durationMs ? `<span class="dur-chip">${fmtDur(p.durationMs)}</span>` : ''
     card.innerHTML = `
-      <div class="poster" ${posterStyle}>${p.previewDataUrl ? '' : 'sin preview'}${durChip}</div>
+      <div class="poster" ${posterStyle}>${p.previewDataUrl ? '' : 'no preview'}${durChip}</div>
       <span class="badge ${isFinal ? 'final' : 'draft'}">${badgeTxt}</span>
       <div class="info">
         <div class="pname">${escapeHtml(p.name)}</div>
-        <div class="meta">${p.clipCount} clip(s) · ${fmtDur(p.durationMs)} · ${fmtDate(p.created)}${p.warnings ? ` · <span class="st-bad">⚠ ${p.warnings}</span>` : ''}${p.orphanParts ? ' · <span class="st-warn">toma sin cerrar</span>' : ''}${p.hasScript ? ' · guion' : ''}</div>
+        <div class="meta">${p.clipCount} clip(s) · ${fmtDur(p.durationMs)} · ${fmtDate(p.created)}${p.warnings ? ` · <span class="st-bad">⚠ ${p.warnings}</span>` : ''}${p.orphanParts ? ' · <span class="st-warn">unfinished take</span>' : ''}${p.hasScript ? ' · script' : ''}</div>
       </div>`
     card.addEventListener('click', () => openProject(p.dir))
     grid.appendChild(card)
@@ -388,7 +388,7 @@ async function createProject() {
   const name = el('newName').value.trim()
   if (!name) { el('newName').focus(); return }
   if (!state.root) {
-    const dir = await window.studio.chooseDir('Carpeta raíz de proyectos')
+    const dir = await window.studio.chooseDir('Root folder for projects')
     if (!dir) return
     setRoot(dir)
   }
@@ -404,7 +404,7 @@ async function createProject() {
 function renderDetail(d) {
   el('detailName').textContent = d.name
   const isFinal = d.hasFinal || d.hasFinal9x16
-  el('detailBadge').textContent = isFinal ? (d.hasFinal && d.hasFinal9x16 ? 'final ✓ +9:16' : 'final ✓') : 'borrador'
+  el('detailBadge').textContent = isFinal ? (d.hasFinal && d.hasFinal9x16 ? 'final ✓ +9:16' : 'final ✓') : 'draft'
   el('detailBadge').className = 'badge ' + (isFinal ? 'final' : 'draft')
 
   // compose options (siempre visibles en la barra de la etapa Montar)
@@ -428,7 +428,7 @@ function renderDetail(d) {
   el('clipsTitle').textContent = `Clips (${d.clips.length})`
   const grid = el('clipsGrid'); grid.innerHTML = ''
   if (!d.clips.length) {
-    grid.innerHTML = '<div class="empty">Sin clips todavía. Pulsa “● Grabar clip”.</div>'
+    grid.innerHTML = '<div class="empty">No clips yet. Hit “● Record clip”.</div>'
   } else {
     d.clips.forEach((c, i) => {
       const card = document.createElement('div')
@@ -440,7 +440,7 @@ function renderDetail(d) {
         <div class="clip-row">
           <span class="clip-meta">Clip ${i + 1}</span>
           <span class="clip-btns">
-            <button data-a="enhance" title="Mejorar audio con NVIDIA Studio Voice">${icon('sparkle', 'icon icon-sm')}</button>
+            <button data-a="enhance" title="Enhance audio with NVIDIA Studio Voice">${icon('sparkle', 'icon icon-sm')}</button>
             <button data-a="up" title="subir" ${i === 0 ? 'disabled' : ''}>${icon('chevron-up', 'icon icon-sm')}</button>
             <button data-a="down" title="bajar" ${i === d.clips.length - 1 ? 'disabled' : ''}>${icon('chevron-down', 'icon icon-sm')}</button>
             <button data-a="del" class="danger" title="borrar">${icon('trash', 'icon icon-sm')}</button>
@@ -448,16 +448,16 @@ function renderDetail(d) {
         </div>`
       wireCameraPlayback(card, '.clip-play', c, d.dir)
       card.querySelector('[data-a="enhance"]').addEventListener('click', async () => {
-        toast(`Mejorando audio de ${c.id} con NVIDIA Studio Voice…`)
+        toast(`Enhancing audio of ${c.id} with NVIDIA Studio Voice…`)
         card.querySelectorAll('.status-chip.st-check').forEach((n) => n.remove())
         card.querySelector('.clip-thumb').insertAdjacentHTML('beforeend', `<span class="status-chip st-check tmp-enh">✨ mejorando voz…</span>`)
         const res = await window.studio.clipEnhance(state.current, c.id, true)
         card.querySelectorAll('.tmp-enh').forEach((n) => n.remove())
         if (res && res.ok) {
-          toast(`✨ Audio de ${c.id} mejorado con éxito`, 'ok')
+          toast(`✨ Audio of ${c.id} enhanced successfully`, 'ok')
           await openProject(state.current, state.stage)
         } else {
-          toast(`✗ No se pudo mejorar audio: ${(res && res.error) || 'error'}`, 'err', 8000)
+          toast(`✗ Could not enhance audio: ${(res && res.error) || 'error'}`, 'err', 8000)
         }
       })
       card.querySelector('[data-a="up"]').addEventListener('click', () => moveClip(c.id, -1))
@@ -470,13 +470,13 @@ function renderDetail(d) {
 
 // Chip de estado del clip (validación ffprobe tras guardar y mejora de voz).
 const CLIP_STATUS = {
-  checking: ['comprobando…', 'st-check'], truncated: ['⚠ truncado', 'st-bad'], empty: ['✗ vacío', 'st-bad'], warning: ['⚠ avisos', 'st-warn'],
+  checking: ['comprobando…', 'st-check'], truncated: ['⚠ truncado', 'st-bad'], empty: ['✗ empty', 'st-bad'], warning: ['⚠ avisos', 'st-warn'],
 }
 function clipStatusChip(c) {
   const camera = c.cameraProcessing
   if (camera && camera.status !== 'done') {
-    const label = camera.status === 'failed' ? 'Fondo pendiente · Reintentar' : camera.status === 'queued' ? 'Fondo en cola…' : `Preparando fondo… ${Math.min(99, Math.round((camera.frames || 0) / Math.max(1, c.durationMs * .03) * 100))}%`
-    return `<span class="status-chip ${camera.status === 'failed' ? 'st-warn' : 'st-check'}" title="${escapeHtml(camera.error || 'El original está guardado. Puedes seguir grabando.')}">${label}</span>`
+    const label = camera.status === 'failed' ? 'Background pending · Retry' : camera.status === 'queued' ? 'Fondo en cola…' : `Preparando fondo… ${Math.min(99, Math.round((camera.frames || 0) / Math.max(1, c.durationMs * .03) * 100))}%`
+    return `<span class="status-chip ${camera.status === 'failed' ? 'st-warn' : 'st-check'}" title="${escapeHtml(camera.error || 'The original is saved. You can keep recording.')}">${label}</span>`
   }
   if (c.enhancing) return `<span class="status-chip st-check" title="Mejorando audio con NVIDIA Studio Voice NIM">✨ mejorando voz…</span>`
   const s = CLIP_STATUS[c.status]
@@ -550,10 +550,10 @@ function onClipEnhanced({ dir, clipId, status, enhanced, error }) {
   }
   document.querySelectorAll(`[data-clip="${clipId}"] .tmp-enh`).forEach((n) => n.remove())
   if (status === 'ok') {
-    toast(`✨ Audio de ${clipId} mejorado con NVIDIA Studio Voice`, 'ok')
+    toast(`✨ Audio of ${clipId} enhanced with NVIDIA Studio Voice`, 'ok')
     if (state.detail && state.detail.dir === dir) openProject(dir, state.stage)
-  } else if (error && !error.includes('sin NVIDIA_API_KEY')) {
-    toast(`⚠ No se pudo mejorar audio de ${clipId}: ${error}`, 'err', 6000)
+  } else if (error && !error.includes('no NVIDIA_API_KEY')) {
+    toast(`⚠ Could not enhance audio of ${clipId}: ${error}`, 'err', 6000)
   }
 }
 
@@ -561,11 +561,11 @@ async function enhanceAllClipsUi() {
   if (!state.current) return
   const btn = el('enhanceClipsBtn')
   if (btn) btn.disabled = true
-  toast('Mejorando el audio de todos los clips con NVIDIA Studio Voice…')
+  toast('Enhancing audio for every clip with NVIDIA Studio Voice…')
   try {
     const res = await window.studio.projectEnhanceClips(state.current, false)
     if (res && res.ok) {
-      toast('✓ Todos los clips procesados con NVIDIA Studio Voice', 'ok')
+      toast('✓ Every clip processed with NVIDIA Studio Voice', 'ok')
       await openProject(state.current, state.stage)
     } else {
       toast(`✗ Error: ${(res && res.error) || 'no se pudo completar'}`, 'err', 8000)
@@ -586,14 +586,14 @@ function renderOrphans(d) {
   box.innerHTML = ''
   for (const o of list) {
     const row = document.createElement('div'); row.className = 'orphan-row'
-    row.innerHTML = `<span>⚠ Toma sin cerrar <b>${escapeHtml(o.clipId)}</b> (${escapeHtml(o.human)}${o.started ? ', ' + fmtDate(o.started) : ''}) — la app se cerró grabando.</span>
+    row.innerHTML = `<span>⚠ Unfinished take <b>${escapeHtml(o.clipId)}</b> (${escapeHtml(o.human)}${o.started ? ', ' + fmtDate(o.started) : ''}) — la app se cerró grabando.</span>
       <button class="btn-secondary mini" data-a="rec">Recuperar</button><button class="btn-secondary danger mini" data-a="del">Descartar</button>`
     row.querySelector('[data-a="rec"]').addEventListener('click', async () => {
       try { await window.studio.clipRecover(d.dir, o.clipId); toast('✓ Toma recuperada como clip', 'ok'); await openProject(d.dir, state.stage) }
       catch (e) { toast('✗ ' + e.message, 'err', 6000) }
     })
     row.querySelector('[data-a="del"]').addEventListener('click', async () => {
-      const ok = await openConfirm('Descartar toma', `¿Descartar ${o.clipId}? Se moverá a la papelera.`, { danger: true })
+      const ok = await openConfirm('Descartar toma', `Discard ${o.clipId}? It will be moved to the trash.`, { danger: true })
       if (!ok) return
       await window.studio.clipDiscardPart(d.dir, o.clipId); await openProject(d.dir, state.stage)
     })
@@ -603,7 +603,7 @@ function renderOrphans(d) {
 function renderAgentCost(d) {
   const n = el('editorCost')
   if (!n) return
-  n.textContent = d.agentRuns ? `${d.agentRuns} ejecución${d.agentRuns > 1 ? 'es' : ''} · ${(d.agentCost || 0).toFixed(2)}` : ''
+  n.textContent = d.agentRuns ? `${d.agentRuns} run${d.agentRuns > 1 ? 'es' : ''} · ${(d.agentCost || 0).toFixed(2)}` : ''
 }
 
 // Área de resultado: muestra los dos aspectos (16:9 YouTube y 9:16 Shorts/Reels).
@@ -612,7 +612,7 @@ function renderResult(d) {
   const isFinal = d.hasFinal || d.hasFinal9x16
   if (!isFinal) {
     finalArea.className = 'final-area'
-    finalArea.innerHTML = '<div class="empty">Aún no hay vídeo final. Graba algún clip y pulsa <b>Componer vídeo</b>: el agente elegido editará la grabación con la skill <code>video-use</code>. Puede tardar varios minutos.</div>'
+    finalArea.innerHTML = '<div class="empty">No final video yet. Record a clip and hit <b>Compose video</b>: the chosen agent will edit the recording with the skill <code>video-use</code>. Puede tardar varios minutos.</div>'
     return
   }
   finalArea.className = 'result-grid'
@@ -640,7 +640,7 @@ function renderResult(d) {
   finalArea.querySelectorAll('[data-srt]').forEach((b) =>
     b.addEventListener('click', async () => {
       const res = await window.studio.exportFile(srts[b.dataset.srt])
-      if (res && res.ok) toast('✓ Subtítulos guardados en ' + res.path.split('/').pop(), 'ok')
+      if (res && res.ok) toast('✓ Subtitles saved to ' + res.path.split('/').pop(), 'ok')
     }))
   finalArea.querySelectorAll('[data-open]').forEach((b) =>
     b.addEventListener('click', () => window.studio.openPath(paths[b.dataset.open])))
@@ -684,7 +684,7 @@ async function moveClip(clipId, delta) {
   await openProject(state.current, state.stage)
 }
 async function deleteClip(clipId, n) {
-  const ok = await openConfirm('Borrar clip', `¿Borrar el Clip ${n}? Se moverá a la papelera.`, { danger: true })
+  const ok = await openConfirm('Borrar clip', `Delete Clip ${n}? It will be moved to the trash.`, { danger: true })
   if (!ok) return
   await window.studio.deleteClip(state.current, clipId)
   await openProject(state.current, state.stage)
@@ -698,9 +698,9 @@ async function renameProject() {
 }
 async function deleteProject() {
   if (state.recordingSession?.dir === state.current) {
-    toast('Termina la sesión del grabador antes de borrar este proyecto.', 'warn'); return
+    toast('End the recorder session before deleting this project.', 'warn'); return
   }
-  const ok = await openConfirm('Borrar proyecto', `¿Borrar “${state.currentName}” entero? Se moverá a la papelera.`, { danger: true })
+  const ok = await openConfirm('Borrar proyecto', `Delete “${state.currentName}” entirely? It will be moved to the trash.`, { danger: true })
   if (!ok) return
   const res = await window.studio.deleteProject(state.current)
   if (res.ok) { state.projects = state.projects.filter((p) => p.dir !== state.current); showHome() }
@@ -787,9 +787,9 @@ function editorPush(ev) {
 // resumen corto de opciones para el pseudo-mensaje inicial del feed
 function optsSummary(o) {
   const parts = [o.aspect === 'both' ? '16:9 + 9:16' : o.aspect]
-  parts.push(o.subtitles ? 'subs' : 'sin subs')
+  parts.push(o.subtitles ? 'subs' : 'no subs')
   if (o.sfx) parts.push('SFX')
-  if (o.cropMenubar) parts.push('sin barra de menú')
+  if (o.cropMenubar) parts.push('menu bar cropped')
   if (o.tone) parts.push(`“${o.tone.slice(0, 40)}”`)
   return parts.join(' · ')
 }
@@ -801,14 +801,14 @@ function updateSessionChip(hasSession) {
   const chip = el('sessionChip')
   chip.classList.remove('hidden')
   if (!hasSession) {
-    chip.textContent = 'conversación nueva'
+    chip.textContent = 'new conversation'
     chip.style.pointerEvents = 'none'
     chip.title = ''
     return
   }
   chip.style.pointerEvents = ''
-  chip.textContent = state.editorResume ? '🧠 continuará la conversación' : 'empezará de cero'
-  chip.title = 'Cambiar entre continuar la conversación anterior o empezar de cero'
+  chip.textContent = state.editorResume ? '🧠 will resume the conversation' : 'will start fresh'
+  chip.title = 'Switch between resuming the previous conversation and starting fresh'
 }
 
 async function startCompose() {
@@ -819,7 +819,7 @@ async function startCompose() {
   await persistOpts()
   feedClear()
   el('composeLog').textContent = ''
-  feedMsg('user', `Montar vídeo (${optsSummary(opts)})`)
+  feedMsg('user', `Edit video (${optsSummary(opts)})`)
   setEditorRunning(true)
   await window.studio.composeProject(state.current, opts, sessionResumeWanted())
 }
@@ -848,7 +848,7 @@ function restoreEditor(job) {
   for (const ev of evs) editorPush(ev)
   if (job.status === 'running') { setEditorRunning(true); return }
   setEditorRunning(false)
-  if (job.status === 'done') { el('editorStatus').textContent = '✓ listo'; feedResult('ok', 'Vídeo listo', 'Ver resultado →', () => setStage('resultado')) }
+  if (job.status === 'done') { el('editorStatus').textContent = '✓ listo'; feedResult('ok', 'Video ready', 'View result →', () => setStage('resultado')) }
   else if (job.status === 'cancelled') { el('editorStatus').textContent = ''; feedResult('cancelled', 'Montaje cancelado') }
   else { el('editorStatus').textContent = ''; feedResult('err', job.error || 'error') }
 }
@@ -862,7 +862,7 @@ let termWired = false
 
 async function openTerminal(resume) {
   if (!state.current) return
-  if (typeof window.Terminal !== 'function') { log('xterm no cargó', 'err'); return }
+  if (typeof window.Terminal !== 'function') { log('xterm failed to load', 'err'); return }
   await persistOpts()
   el('termPanel').classList.remove('hidden')
   el('termProj').textContent = state.currentName || ''
@@ -884,7 +884,7 @@ async function openTerminal(resume) {
   // pty → term: attach the IPC listeners ONCE; they reference the latest `term`.
   if (!termWired) {
     window.studio.terminal.onData((d) => { if (term) term.write(d) })
-    window.studio.terminal.onExit((code) => { el('termStatus').textContent = `· sesión terminada (código ${code})` })
+    window.studio.terminal.onExit((code) => { el('termStatus').textContent = `· session ended (code ${code})` })
     termWired = true
   }
 
@@ -896,15 +896,15 @@ async function openTerminal(resume) {
 
   const res = await window.studio.terminal.start({ dir: state.current, resume, opts: currentOpts(), cols: term.cols, rows: term.rows })
   if (!res || !res.ok) {
-    el('termStatus').textContent = '· error: ' + ((res && res.error) || 'no arrancó')
+    el('termStatus').textContent = '· error: ' + ((res && res.error) || 'did not start')
     return
   }
   el('termAgent').textContent = res.provider === 'codex' ? 'Codex' : 'Claude Code'
   if (res.fallback === 'system-terminal') {
-    el('termStatus').textContent = '· abierto en la Terminal del sistema (PTY embebido no disponible)'
+    el('termStatus').textContent = '· opened in the system Terminal (embedded PTY unavailable)'
     return
   }
-  el('termStatus').textContent = resume ? '· continuando la conversación…' : '· te propondrá el plan de montaje'
+  el('termStatus').textContent = resume ? '· resuming the conversation…' : '· it will propose the edit plan'
   try { window.studio.terminal.resize(term.cols, term.rows) } catch { /* ignore */ }
 }
 
@@ -922,10 +922,10 @@ on('agentProvider', 'change', async (event) => {
   try {
     await window.studio.settingsSet({ agentProvider: provider })
     state.agentProvider = provider
-    toast(`${provider === 'codex' ? 'Codex' : 'Claude Code'} para los próximos montajes y guiones`)
+    toast(`${provider === 'codex' ? 'Codex' : 'Claude Code'} para los próximos montajes y scriptes`)
   } catch (error) {
     select.value = previous
-    toast('No se pudo cambiar el agente: ' + error.message, 'err')
+    toast('Could not switch agent: ' + error.message, 'err')
   } finally { select.disabled = false }
   if (state.current) {
     try { updateSessionChip((await window.studio.agentSession(state.current)).hasSession) } catch { /* refreshed when project opens */ }
@@ -946,7 +946,7 @@ window.studio.onAgentProgress(({ key, msg, ev }) => {
 // Log completo (stderr + eventos) del agente de este proyecto, desde ⋯ o tras un error.
 async function showAgentLog(key) {
   const txt = await window.studio.agentLog(key || state.current)
-  el('composeLog').textContent = txt || '(sin log)'
+  el('composeLog').textContent = txt || '(no log)'
   el('composeLog').classList.remove('hidden')
   el('composeLog').scrollTop = el('composeLog').scrollHeight
 }
@@ -968,8 +968,8 @@ window.studio.onAgentDone(async ({ key, ok, result, error, cost, logFile }) => {
         if (state.current === key) updateSessionChip(session.hasSession)
       }
       const costTxt = cost && cost.cost != null ? ` · ${cost.cost.toFixed(2)}${cost.turns ? ` · ${cost.turns} turnos` : ''}` : ''
-      feedResult('ok', 'Vídeo listo' + costTxt, 'Ver resultado →', () => setStage('resultado'))
-      toast('✓ Vídeo montado' + costTxt, 'ok')
+      feedResult('ok', 'Video ready' + costTxt, 'View result →', () => setStage('resultado'))
+      toast('✓ Video edited' + costTxt, 'ok')
       if (d) renderAgentCost(d)
     } else if (error === 'cancelado') {
       el('editorStatus').textContent = ''
@@ -977,7 +977,7 @@ window.studio.onAgentDone(async ({ key, ok, result, error, cost, logFile }) => {
     } else {
       el('editorStatus').textContent = ''
       feedResult('err', '✗ ' + (error || 'error'), logFile ? 'Ver log' : null, logFile ? () => showAgentLog(key) : null)
-      toast('✗ El montaje falló', 'err', 6000)
+      toast('✗ The edit failed', 'err', 6000)
     }
   } else if (key === 'style' || key === 'script' || key === 'hooks') {
     scriptDone(key, ok, result, error, cost)
@@ -1004,7 +1004,7 @@ function openConfirm(title, text, opts = {}) {
     el('modalInput').classList.add('hidden')
     const card = el('modal').querySelector('.modal-card')
     card.classList.toggle('danger', !!opts.danger)
-    el('modalOk').textContent = opts.danger ? opts.okLabel || 'Borrar' : 'OK'
+    el('modalOk').textContent = opts.danger ? opts.okLabel || 'Delete' : 'OK'
     el('modal').classList.remove('hidden')
   })
 }
@@ -1018,7 +1018,7 @@ function closeModal(result) {
 }
 function openVideo(src) {
   const v = el('modalVideo')
-  v.onerror = () => { toast('✗ No se pudo reproducir el vídeo (¿fichero movido o dañado?)', 'err', 6000); closeVideo() }
+  v.onerror = () => { toast('✗ Could not play the video (file moved or damaged?)', 'err', 6000); closeVideo() }
   v.src = src
   el('videoModal').classList.remove('hidden')
   v.play().catch(() => {})
