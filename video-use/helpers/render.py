@@ -1238,7 +1238,13 @@ def build_final_composite(
 
     inputs: list[str] = ["-i", str(base_path)]
     for ov in overlays:
-        inputs += ["-i", str(resolve_path(ov["file"], edit_dir))]
+        ov_path = resolve_path(ov["file"], edit_dir)
+        # A VP9 .webm overlay (HyperFrames `--format webm`) carries its alpha in
+        # side data that ffmpeg's native vp9 decoder drops (the card would land as
+        # an opaque black box). libvpx-vp9 keeps the alpha plane.
+        if ov_path.suffix.lower() == ".webm":
+            inputs += ["-c:v", "libvpx-vp9"]
+        inputs += ["-i", str(ov_path)]
     for s in sfx:
         inputs += ["-i", str(resolve_path(s["file"], edit_dir))]
     music_idx = None
